@@ -63,6 +63,15 @@ public class LicenseDerivationTest extends TestCase {
                 "/mxgAYAAAAAVGVhbVNwZWFrIFN5c3RlbXMgR21iSAAAWysE+/5ug1yKk4WiiWMNeB+" +
                 "E+vQ5RmxglJLi8rW15UsgCnjyQAp5mwA=",
                 "ZWGGM5QmRdl6AQOgBUZgOAVHcicsm/YPYR3EukrFiGE=");
+
+        // TS5 License
+        check("AQCFoMHnK9xq4cnyi4UO6jlF3wpdR2CqK7HBWgAaIqgdaQAXCQWA" +
+                "GstsgAAAAQRUZWFtU3BlYWsgU3lzdGVtcyBHbWJIAACiHkpxdiDFyfywh8TxbuN5/" +
+                "nlykG4F41DGojMydnYKTAgXgP4AF9K7AAcDBgEBAAAAIBgCAFRlYW1TcGVhayBTeX" +
+                "N0ZW0gR21iSAAGAwEAAAAGAPROQHIID4UrzI3G4Mn4ObmKAri64LHxwt9onnb7IThdI" +
+                "Bej96cXpKBn",
+            "Zqnu3TCpswOYMFZgkMOMMuE/jK3WRiUGJVWdHeHEH7I=");
+
     }
 
 }

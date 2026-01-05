@@ -258,9 +258,9 @@ public final class Ts3Crypt {
         try {
             byte[] dataArray = new DERSequence(new ASN1Encodable[]{
                     new DERBitString(new byte[]{0b0000_0000}, 7),
-                    new DERInteger(32),
-                    new DERInteger(publicKey.getAffineXCoord().toBigInteger()),
-                    new DERInteger(publicKey.getAffineYCoord().toBigInteger())
+                    new ASN1Integer(32),
+                    new ASN1Integer(publicKey.getAffineXCoord().toBigInteger()),
+                    new ASN1Integer(publicKey.getAffineYCoord().toBigInteger())
             }).getEncoded();
 
             return dataArray;

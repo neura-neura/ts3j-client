@@ -3,6 +3,7 @@ package com.github.manevolent.ts3j.license;
 public enum LicenseUseType {
     INTERMEDIATE(0, IntermediateLicenseUse.class),
     SERVER(2, ServerLicenseUse.class),
+    TS5SERVER(8, Ts5ServerLicenseUse.class),
     EPHEMERAL(32, EphemeralLicenseUse.class)
     ;
 
