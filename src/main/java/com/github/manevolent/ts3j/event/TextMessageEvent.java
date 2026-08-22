@@ -64,6 +64,26 @@ public class TextMessageEvent extends BaseEvent {
 		return getInt("target");
 	}
 
+	/**
+	 * Gets the channel ID when the event carries an explicit channel route.
+	 * ServerQuery-style events use {@code target}; full-client channel events
+	 * may omit it and must be resolved from the subscribed channel by the
+	 * gateway. Callers should check {@link #getTargetMode()} first.
+	 */
+	public int getTargetChannelId() {
+		/*
+		 * ServerQuery notifications normally expose the destination as target.
+		 * The full-client protocol used by LocalTeamspeakClientSocket omits that
+		 * field for channel chat and routes the event through the subscribed
+		 * channel instead.  Some ServerQuery bridges expose the route as
+		 * __cmd_listener_channel_id.  Prefer the explicit route when present and
+		 * leave resolution to the gateway when neither is available.
+		 */
+		int listenerChannel = getInt("__cmd_listener_channel_id");
+		if (listenerChannel >= 0) return listenerChannel;
+		return getInt("target");
+	}
+
 	@Override
 	public void fire(TS3Listener listener) {
 		listener.onTextMessage(this);

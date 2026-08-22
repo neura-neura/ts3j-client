@@ -1,4 +1,11 @@
-# ts3j
+<p align="center">
+  <img src="installer/assets/ts3j-client.png" alt="ts3j-client logo" width="240">
+</p>
+<h1 align="center">ts3j-client</h1>
+
+<p align="center">A compact Java desktop client for TeamSpeak 3, powered by ts3j.</p>
+
+## ts3j library
 
 TS3J is an open-source implementation of the reverse-engineered Teamspeak3 full server/client protocol, as an adaptation of Splamy's C# TS3Client source code.  You can find that here: https://github.com/Splamy/TS3AudioBot/.
 
@@ -131,3 +138,168 @@ Refer to the `setVoiceHandler` and `setWhisperHandler` methods to supply a Consu
 Note that the first 5 packets starting a voice session are marked with the COMPRESSED flag.  The final voice packet, intended to singal to close your decoder and flush samples, is always empty (0-length byte array).
 
 Manebot can do this in its TS3 plugin, which uses TS3j: https://github.com/Manevolent/manebot-ts3/tree/master/src/main/java/io/manebot/plugin/ts3/platform/audio/voice
+
+# ts3j desktop client
+
+This repository also contains a JavaFX desktop client under
+`com.github.manevolent.ts3j.client`. It keeps the original ts3j API intact and
+adds a gateway, an authoritative shared voice-session repository, and a compact
+dark/light interface.
+
+The normal build and tests are:
+
+```text
+mvn clean test
+```
+
+The desktop target requires JDK 17 or newer (the original ts3j sources remain
+Java 8-compatible); Maven resolves the JavaFX 17 runtime for the host
+platform.
+
+To open the local preview without a TeamSpeak server:
+
+```text
+mvn javafx:run "-Djavafx.args=--demo"
+```
+
+For a Windows installer, use `installer/build-installer.ps1`. It first creates
+the Java runtime app-image with `jpackage` and then packages that image into a
+real Inno Setup 6 EXE. The installer is a normal Windows setup program, not a
+7-Zip/SFX archive, and it includes desktop and Start menu shortcuts.
+
+Example (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 `
+  -Version 1.0 `
+  -Maven C:\path\to\mvn.cmd `
+  -Jpackage C:\path\to\jpackage.exe `
+  -InnoSetup 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+The stable Inno Setup `AppId` and `UsePreviousAppDir` keep the last selected
+folder for future reinstalls. On the first migration from the old MSI, the
+wizard also reads its registered `InstallLocation` and offers that folder
+automatically; the folder selector remains available if a different location
+is desired.
+
+Building the EXE requires JDK 17+, Maven, and Inno Setup 6 (the installed
+application has no Inno Setup runtime dependency). The modern deliverable is
+`dist\ts3j-client-<version>.exe`; older MSI/WiX artifacts are legacy builds.
+
+The preview is explicit demo data. A real connection starts from the
+`Connect` button and asks for host, an optional port, nickname, password, and
+a shared session-state file. Leave the port empty to use TeamSpeak 3's standard
+port `9987`, as in the official client when connecting with only an address.
+Put the state file on a shared filesystem when several app instances must see
+the same `voiceSessionStart`.
+
+The connection form remembers the last host, port, nickname, password, and
+state-file path for the current Windows user. These values are stored in the
+local Java Preferences profile and the password is never written to application
+logs or included in `ConnectionConfig.toString()`.
+
+The desktop theme is also stored in Java Preferences and is restored on the
+next launch. The Preferences dialog provides a persistent language selector
+with English as the default, plus Spanish and Simplified Chinese translations;
+changing the language rebuilds the visible shell immediately. The generated
+pastel iOS-style icon is available as the PNG master at
+`installer/assets/ts3j-client.png` and as a multi-size Windows ICO at
+`installer/assets/ts3j-client.ico`; the same PNG is bundled into the JavaFX
+resources and used by the window chrome and system tray. The installer assigns
+that ICO explicitly to both shortcuts, recreates stale shortcut files during
+reinstall, and asks Windows to refresh its icon cache after setup.
+
+Some TeamSpeak servers omit `channel_codec` from `channellist` even though the
+channel is a normal voice channel. The desktop gateway requests `channelinfo`
+for those partial records, so a channel such as `Default Channel` is classified
+as voice from its authoritative codec; its text-chat entry remains independent
+of that voice classification.
+
+TeamSpeak channel chat is independent of the voice codec: a channel such as
+`Default Channel` can appear in both the text and voice sections. The desktop
+client now keeps that dual capability, receives `notifytextmessage` events, and
+uses ts3j's `sendChannelMessage` for the composer. The server still remains the
+authority for channel-chat permissions, so a denied message is shown as a
+connection error instead of being presented as sent. The full-client protocol
+may omit `target` from a channel notification; the gateway resolves that event
+from the sender/subscribed channel and also shows an accepted outgoing message
+locally when the server does not echo it back. The gateway also appends each
+accepted message to a local per-server history under
+`%USERPROFILE%\.ts3j-client\chat-history`; after reconnecting, the UI renders
+that local history followed by `*** End of chat history` and then new live
+messages. Messages sent while this application was offline are not invented:
+only messages actually observed by this instance are stored.
+
+The timer is derived from a persisted UTC `Instant` and the set of users in a
+channel. A join observed as a real zero-to-one transition starts a session;
+duplicate joins are idempotent, moves update both channels, and the record is
+removed when the last user leaves. TeamSpeak's `client_lastconnected`,
+`connection_connected_time`, and `seconds_empty` fields describe an individual
+server connection or how long an empty channel has been empty; none is the
+start of the current occupied channel session. The client therefore never
+uses an individual connection time as a channel timer.
+
+If the official TeamSpeak client occupied a channel before this app connected,
+the historical snapshot is marked `startKnown=false`. The UI presents the
+channel as `Active` with a neutral “Session active before connecting”
+note, rather than showing an error or inventing a numeric duration. The exact
+time becomes available when an instance with the shared state file has observed
+the zero-to-one transition, or when a server-side monitor/plugin records channel
+move events into that shared state. The start cannot be reconstructed
+retroactively from the normal client protocol. If a stale known or unknown
+record is reconciled with a snapshot containing only this application's client,
+the gateway treats that local join as a fresh zero-to-one observation and starts
+a new exact timer; if another user is still present, its previous start is
+preserved (or remains `Active` when no start was recorded).
+
+The desktop client exposes the TeamSpeak `clientupdate` controls for away
+status, manual microphone mute (`client_input_muted`) and speakers/headphones
+mute (`client_output_muted`). Their accepted state is reflected in the local
+client row and in the other clients' channel lists through TeamSpeak events.
+The bundled ts3j layer still does not provide a Windows capture/playback
+device implementation, so these controls change the authoritative TeamSpeak
+mute state; adding a local audio device backend is a separate requirement for
+capturing or rendering voice in this JavaFX client.
+
+Each voice user has a context menu (right click, or the keyboard context-menu
+key when the row is focused) with a local volume modifier from -50.0 dB to
++20.0 dB. The value is persisted per server and TeamSpeak unique identifier;
+it is intentionally not sent as a server command. The official TeamSpeak SDK
+applies this modifier in its local playback mixer, while the current ts3j
+desktop shell does not yet ship a playback device/mixer, so the setting is
+stored and displayed without pretending to change server audio.
+
+The application preferences dialog also exposes “Start with Windows and open
+in the tray” and “Minimize to the tray when closing the window”. Startup is
+registered in the current user's Windows Startup folder through a small
+launcher script and does not require administrator privileges. The tray menu
+can restore the window or exit the application.
+
+Voice notifications are enabled by default and can be disabled from
+Preferences. The alert-volume slider in the same panel is persisted locally
+and applies to both Windows speech and the bundled cues. Fixed actions such as
+mute, away, connect, and chat play the bundled cue first; dynamic events such as
+a user joining or leaving a channel use the Windows SAPI voice so the
+notification can include the server, channel, and nickname. The selected
+English, Spanish, or Chinese interface language selects the corresponding
+installed SAPI voice when one is available. A small original cue pack is
+bundled inside the application as a fallback, so notifications do not depend
+on the official TeamSpeak client being installed. TeamSpeak's copyrighted
+sound-pack files are not copied or redistributed.
+The outbound chat cue is emitted as soon as the local send is queued and uses
+a dedicated notification lane, so it is not delayed by a network round-trip or
+by a longer announcement already being spoken.
+
+Updates are available from the Preferences dialog. The client checks the
+public GitHub release for `neura-neura/ts3j-client`, downloads the Windows
+installer when a newer semantic version is available, closes the running
+application completely, and starts the installer. A release without a Windows
+installer asset is rejected instead of downloading an unknown file.
+
+On Windows, when the official TeamSpeak 3 client is installed, the desktop
+client reads the active identity record from `%APPDATA%\TS3Client\settings.db`
+in read-only mode and keeps it only in memory. This preserves the server
+permissions associated with the official identity; passwords and other settings
+are not imported. If that database is unavailable, the client falls back to its
+own persisted identity and upgrades it to security level 8 before connecting.

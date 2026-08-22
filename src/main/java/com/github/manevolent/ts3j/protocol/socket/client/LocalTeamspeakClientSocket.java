@@ -806,6 +806,38 @@ public class LocalTeamspeakClientSocket
         super.setNickname(nickname);
     }
 
+    /**
+     * Sets the away flag for this client through the full-client
+     * {@code clientupdate} command.
+     */
+    public void setAway(boolean away)
+            throws IOException, TimeoutException, InterruptedException, CommandException {
+        updateClientFlag("client_away", away);
+    }
+
+    /**
+     * Sets the propagated microphone mute state for this client. This is the
+     * manual mute state; Push-to-Talk should use client_input_deactivated
+     * instead.
+     */
+    public void setInputMuted(boolean muted)
+            throws IOException, TimeoutException, InterruptedException, CommandException {
+        updateClientFlag("client_input_muted", muted);
+    }
+
+    /** Sets the propagated speakers/headphones mute state for this client. */
+    public void setOutputMuted(boolean muted)
+            throws IOException, TimeoutException, InterruptedException, CommandException {
+        updateClientFlag("client_output_muted", muted);
+    }
+
+    private void updateClientFlag(String property, boolean value)
+            throws IOException, TimeoutException, InterruptedException, CommandException {
+        Command command = new SingleCommand("clientupdate", ProtocolRole.CLIENT);
+        command.add(new CommandSingleParameter(property, value ? "1" : "0"));
+        executeCommand(command).complete();
+    }
+
     public void setHWID(String hwid) {
         setOption("client.hwid", hwid);
     }
