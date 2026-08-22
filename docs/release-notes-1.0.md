@@ -21,7 +21,7 @@ Download `ts3j-client-1.0.exe`, run it, and follow the setup wizard. The
 installer includes its own Java runtime and does not require Java to be
 installed separately. The SHA-256 checksum is:
 
-`2DDF0E8CF093C57DCFB353CF17BF73F984F8F5FB0D886B783659EE56A9CFCB1E`
+`697043248710AA15DF965E7A8162A3E55856C5D4E4F7E9C1592417C3216A217E`
 
 The update button in Preferences downloads future Windows installers from
 this repository's public releases, closes the current client, and launches

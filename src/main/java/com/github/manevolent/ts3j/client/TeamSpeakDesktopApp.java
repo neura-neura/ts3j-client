@@ -1350,6 +1350,7 @@ public final class TeamSpeakDesktopApp extends Application {
 
     private void checkForUpdates(Button button, ProgressBar progress, Label status) {
         button.setDisable(true);
+        status.getStyleClass().remove("error-line");
         progress.setProgress(-1.0D);
         progress.setVisible(true);
         progress.setManaged(true);
@@ -1359,6 +1360,7 @@ public final class TeamSpeakDesktopApp extends Application {
                 UpdateService.UpdateInfo latest = updateService.checkLatest();
                 if (!UpdateService.isNewer(latest.getVersion(), AppVersion.VERSION)) {
                     Platform.runLater(() -> {
+                        status.getStyleClass().remove("error-line");
                         status.setText(t("settings.update.latest", AppVersion.VERSION));
                         progress.setVisible(false);
                         progress.setManaged(false);
@@ -1367,8 +1369,10 @@ public final class TeamSpeakDesktopApp extends Application {
                     return;
                 }
 
-                Platform.runLater(() -> status.setText(
-                        t("settings.update.available", latest.getVersion())));
+                Platform.runLater(() -> {
+                    status.getStyleClass().remove("error-line");
+                    status.setText(t("settings.update.available", latest.getVersion()));
+                });
                 Path installer = updateService.download(latest, fraction -> Platform.runLater(() -> {
                     progress.setProgress(fraction);
                     status.setText(t("settings.update.downloading", latest.getVersion(),
@@ -1393,6 +1397,7 @@ public final class TeamSpeakDesktopApp extends Application {
                                         ProgressBar progress, Label status) {
         try {
             new ProcessBuilder(installer.toAbsolutePath().toString()).start();
+            status.getStyleClass().remove("error-line");
             status.setText(t("settings.update.ready"));
             button.setDisable(true);
             progress.setProgress(1.0D);
