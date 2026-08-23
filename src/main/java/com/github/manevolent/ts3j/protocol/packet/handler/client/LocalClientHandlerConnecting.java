@@ -264,7 +264,9 @@ public class LocalClientHandlerConnecting extends LocalClientHandler {
                 new CommandSingleParameter("client_nickname_phonetic",
                         getClient().getOption("client.nickname_phonetic", String.class)
                 ),
-                new CommandSingleParameter("client_meta_data", ""),
+                new CommandSingleParameter("client_meta_data",
+                        getClient().getOption("client.meta_data", String.class) != null
+                                ? getClient().getOption("client.meta_data", String.class) : ""),
                 new CommandSingleParameter("client_default_token",
                         getClient().getOption("client.default_token", String.class)
                 ),

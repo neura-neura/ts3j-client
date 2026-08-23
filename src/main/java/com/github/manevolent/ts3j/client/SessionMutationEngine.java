@@ -47,6 +47,9 @@ final class SessionMutationEngine {
             case SNAPSHOT:
                 reconcileSnapshot(state, delta);
                 break;
+            case START:
+                adoptStart(state, delta.getTo(), delta.getObservedAt());
+                break;
             default:
                 throw new IllegalStateException("Unsupported delta: " + delta.getType());
         }
@@ -182,5 +185,18 @@ final class SessionMutationEngine {
                 state.sessions.put(key, current.withUsers(users, state.revision + 1));
             }
         }
+    }
+
+    private static void adoptStart(SessionState state, SessionKey key, Instant start) {
+        if (key == null || start == null) return;
+        VoiceRoomSession current = state.sessions.get(key);
+        if (current == null || !current.isOccupied()) return;
+        Instant existing = current.getVoiceSessionStart();
+        // Several app instances may announce the same transition at nearly
+        // the same time. The earliest trusted marker is deterministic and
+        // avoids shortening a session because messages arrived out of order.
+        if (current.isStartKnown() && existing != null && !start.isBefore(existing)) return;
+        state.sessions.put(key, current.withStart(start, true,
+                current.getPresentUsers(), state.revision + 1));
     }
 }

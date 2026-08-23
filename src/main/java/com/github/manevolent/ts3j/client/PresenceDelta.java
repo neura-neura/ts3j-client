@@ -10,7 +10,7 @@ import java.util.Set;
 
 /** Normalized presence event consumed by the session reducer. */
 public final class PresenceDelta {
-    public enum Type { JOIN, LEAVE, MOVE, SNAPSHOT }
+    public enum Type { JOIN, LEAVE, MOVE, SNAPSHOT, START }
 
     private final Type type;
     private final String serverId;
@@ -88,6 +88,18 @@ public final class PresenceDelta {
         }
         return new PresenceDelta(Type.SNAPSHOT, serverId, -1, null, null,
                 observedAt, true, eventId, sequence, copy, bootstrapClientId);
+    }
+
+    /**
+     * Adopts a start observed by another ts3j-client instance. The reducer
+     * applies it only to an occupied session, so a stale private marker cannot
+     * resurrect an empty channel.
+     */
+    public static PresenceDelta start(String serverId, int channelId, Instant observedAt,
+                                      String eventId) {
+        return new PresenceDelta(Type.START, serverId, -1, null,
+                new SessionKey(serverId, channelId), observedAt, false,
+                eventId, 0L, null, -1);
     }
 
     public Type getType() { return type; }

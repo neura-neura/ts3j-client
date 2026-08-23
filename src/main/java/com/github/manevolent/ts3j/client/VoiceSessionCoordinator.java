@@ -98,6 +98,15 @@ public final class VoiceSessionCoordinator {
                 eventId, sequence, bootstrapClientId));
     }
 
+    /**
+     * Shares a known channel-session start discovered by another app instance.
+     * The reducer ignores it when the channel is no longer occupied.
+     */
+    public SessionSnapshot adoptSessionStart(String serverId, int channelId,
+                                             Instant observedAt, String eventId) {
+        return apply(PresenceDelta.start(serverId, channelId, observedAt, eventId));
+    }
+
     public Clock getClock() {
         return clock;
     }

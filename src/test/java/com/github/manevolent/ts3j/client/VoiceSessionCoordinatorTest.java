@@ -237,6 +237,31 @@ public class VoiceSessionCoordinatorTest {
     }
 
     @Test
+    public void anAuthoritativeMarkerPromotesAnOccupiedUnknownSession() {
+        VoiceSessionCoordinator coordinator = coordinator(new InMemoryVoiceSessionRepository());
+        Map<Integer, java.util.Collection<Integer>> occupied = new LinkedHashMap<>();
+        occupied.put(10, Arrays.<Integer>asList(101, 102));
+        coordinator.reconcile(SERVER, occupied, EIGHTEEN, "snapshot", 0);
+
+        VoiceRoomSession adopted = session(coordinator.adoptSessionStart(
+                SERVER, 10, TEN, "remote-marker"), 10);
+
+        assertTrue(adopted.isStartKnown());
+        assertEquals(TEN, adopted.getVoiceSessionStart());
+        assertEquals(2, adopted.getPresentUsers().size());
+    }
+
+    @Test
+    public void aStaleMarkerCannotResurrectAnEmptyChannel() {
+        VoiceSessionCoordinator coordinator = coordinator(new InMemoryVoiceSessionRepository());
+        coordinator.join(SERVER, 10, 101, TEN, false, "join", 1);
+        coordinator.leave(SERVER, 10, 101, EIGHTEEN, "leave", 2);
+
+        assertTrue(coordinator.adoptSessionStart(SERVER, 10, TEN, "late-marker")
+                .getSessions().isEmpty());
+    }
+
+    @Test
     public void reconnectionSnapshotRemovesUsersWhoLeftWhileOffline() throws Exception {
         Path directory = Files.createTempDirectory("ts3j-session-reconnect");
         VoiceSessionCoordinator coordinator = coordinator(new FileVoiceSessionRepository(

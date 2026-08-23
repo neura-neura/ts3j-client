@@ -192,7 +192,13 @@ The preview is explicit demo data. A real connection starts from the
 a shared session-state file. Leave the port empty to use TeamSpeak 3's standard
 port `9987`, as in the official client when connecting with only an address.
 Put the state file on a shared filesystem when several app instances must see
-the same `voiceSessionStart`.
+the same `voiceSessionStart`. In addition, current ts3j-client instances
+advertise a compact session marker through a private TeamSpeak message when
+one app instance joins another app instance already in the channel. The
+marker is consumed internally and never rendered as chat, so separate
+computers can converge without a shared folder. If the first occupant is the
+official client or an older client that does not advertise this protocol, the
+normal TeamSpeak protocol still cannot reveal the historical start.
 
 The connection form remembers the last host, port, nickname, password, and
 state-file path for the current Windows user. These values are stored in the
