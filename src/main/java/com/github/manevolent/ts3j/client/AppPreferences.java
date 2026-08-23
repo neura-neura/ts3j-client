@@ -11,6 +11,8 @@ final class AppPreferences {
     private static final String LANGUAGE = "language";
     private static final String VOICE_NOTIFICATIONS = "voice-notifications";
     private static final String VOICE_NOTIFICATION_VOLUME = "voice-notification-volume";
+    private static final String CAPTURE_DEVICE = "capture-device";
+    private static final String PLAYBACK_DEVICE = "playback-device";
     private static final int DEFAULT_VOICE_NOTIFICATION_VOLUME = 100;
 
     private final Preferences preferences;
@@ -77,6 +79,24 @@ final class AppPreferences {
 
     void setVoiceNotificationVolume(int value) {
         preferences.putInt(VOICE_NOTIFICATION_VOLUME, boundedVoiceVolume(value));
+        flush();
+    }
+
+    String captureDevice() {
+        return preferences.get(CAPTURE_DEVICE, "");
+    }
+
+    void setCaptureDevice(String value) {
+        preferences.put(CAPTURE_DEVICE, value == null ? "" : value);
+        flush();
+    }
+
+    String playbackDevice() {
+        return preferences.get(PLAYBACK_DEVICE, "");
+    }
+
+    void setPlaybackDevice(String value) {
+        preferences.put(PLAYBACK_DEVICE, value == null ? "" : value);
         flush();
     }
 

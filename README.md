@@ -171,7 +171,7 @@ Example (PowerShell):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 `
-  -Version 1.0 `
+  -Version 1.0.1 `
   -Maven C:\path\to\mvn.cmd `
   -Jpackage C:\path\to\jpackage.exe `
   -InnoSetup 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
@@ -198,6 +198,15 @@ The connection form remembers the last host, port, nickname, password, and
 state-file path for the current Windows user. These values are stored in the
 local Java Preferences profile and the password is never written to application
 logs or included in `ConnectionConfig.toString()`.
+
+TeamSpeak voice transport is UDP. For a private address such as
+`192.168.196.65`, the computer running the client must be on the same LAN/VPN
+(for example the same ZeroTier network), and the server/firewall must allow
+`9987/UDP`. A successful `ping` or an open TCP query port does not prove that
+the TeamSpeak voice port is reachable. The client binds/connects its datagram
+socket to the selected endpoint so Windows can associate the VPN route and
+firewall state with the handshake; a timeout now reports this UDP-specific
+diagnosis instead of suggesting a certificate.
 
 The desktop theme is also stored in Java Preferences and is restored on the
 next launch. The Preferences dialog provides a persistent language selector
@@ -259,8 +268,8 @@ mute (`client_output_muted`). Their accepted state is reflected in the local
 client row and in the other clients' channel lists through TeamSpeak events.
 The bundled ts3j layer still does not provide a Windows capture/playback
 device implementation, so these controls change the authoritative TeamSpeak
-mute state; adding a local audio device backend is a separate requirement for
-capturing or rendering voice in this JavaFX client.
+mute state; the local Java Sound monitor described below is intentionally
+separate from that transport state.
 
 Each voice user has a context menu (right click, or the keyboard context-menu
 key when the row is focused) with a local volume modifier from -50.0 dB to
@@ -269,6 +278,26 @@ it is intentionally not sent as a server command. The official TeamSpeak SDK
 applies this modifier in its local playback mixer, while the current ts3j
 desktop shell does not yet ship a playback device/mixer, so the setting is
 stored and displayed without pretending to change server audio.
+
+The desktop shell allows only one running instance per Windows user. Launching
+the executable again sends a local focus request to the existing process and
+restores its window (including from the tray). When the user is not in a voice
+channel, the tray shows the application logo. Inside a voice channel it becomes
+a compact microphone state indicator: red means muted, gray means unmuted and
+quiet, and green means the local microphone meter currently detects speech.
+Repeated samples in the same state do not repaint the native tray icon, and a
+small hysteresis/hold window filters brief threshold crossings so speech gaps
+or input noise do not make the indicator flash.
+
+Preferences also include a combined local audio panel. It enumerates Java
+Sound capture and playback devices, remembers the selected IDs, shows live
+microphone and application-output meters, and can play a short test tone. This
+panel is intentionally transparent about the current ts3j boundary: the
+meters and test tone use the operating system's Java Sound devices, while the
+ts3j layer still has no TeamSpeak codec/voice playback backend. Selecting a
+device therefore prepares local monitoring but does not, by itself, route
+TeamSpeak voice through that device. The microphone meter is processed locally
+only while the app is open; its level is not uploaded by this client.
 
 The application preferences dialog also exposes “Start with Windows and open
 in the tray” and “Minimize to the tray when closing the window”. Startup is

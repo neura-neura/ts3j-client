@@ -15,14 +15,22 @@ import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import javax.imageio.ImageIO;
 
-/** System-tray integration using the app icon with a generated fallback. */
+/** System-tray integration with the app logo and microphone-state indicator. */
 final class DesktopTray implements AutoCloseable {
+    enum MicState {
+        APP,
+        MUTED,
+        IDLE,
+        ACTIVE
+    }
+
     private TrayIcon trayIcon;
     private Stage stage;
     private Runnable exitAction;
     private UiLanguage language;
     private MenuItem openItem;
     private MenuItem quitItem;
+    private MicState micState = MicState.APP;
 
     DesktopTray() {
         this(UiLanguage.ENGLISH);
@@ -36,7 +44,22 @@ final class DesktopTray implements AutoCloseable {
         this.language = language == null ? UiLanguage.ENGLISH : language;
         if (openItem != null) openItem.setLabel(UiText.text(this.language, "tray.open"));
         if (quitItem != null) quitItem.setLabel(UiText.text(this.language, "tray.quit"));
-        if (trayIcon != null) trayIcon.setToolTip(UiText.text(this.language, "server"));
+        if (trayIcon != null) {
+            trayIcon.setToolTip(UiText.text(this.language, "tray.mic." + micState.name().toLowerCase()));
+        }
+    }
+
+    void setMicState(MicState state) {
+        MicState next = state == null ? MicState.APP : state;
+        // Audio samples arrive several times per second. Avoid replacing the
+        // native tray image when the semantic state did not change; Windows
+        // can briefly flash the icon on every setImage call.
+        if (micState == next) return;
+        micState = next;
+        if (trayIcon != null) {
+            trayIcon.setImage(createImage(micState));
+            trayIcon.setToolTip(UiText.text(language, "tray.mic." + micState.name().toLowerCase()));
+        }
     }
 
     boolean install(Stage stage, Runnable showAction, Runnable exitAction) {
@@ -57,7 +80,8 @@ final class DesktopTray implements AutoCloseable {
             menu.addSeparator();
             menu.add(quit);
 
-            TrayIcon icon = new TrayIcon(createImage(), UiText.text(language, "server"), menu);
+            TrayIcon icon = new TrayIcon(createImage(micState),
+                    UiText.text(language, "tray.mic." + micState.name().toLowerCase()), menu);
             icon.setImageAutoSize(true);
             icon.addActionListener(event -> Platform.runLater(showAction));
             SystemTray.getSystemTray().add(icon);
@@ -97,43 +121,51 @@ final class DesktopTray implements AutoCloseable {
         quitItem = null;
     }
 
-    private static BufferedImage createImage() {
+    private static BufferedImage createImage(MicState state) {
         Dimension size = SystemTray.isSupported()
                 ? SystemTray.getSystemTray().getTrayIconSize() : new Dimension(16, 16);
         int width = Math.max(16, size.width);
         int height = Math.max(16, size.height);
-        try (InputStream stream = DesktopTray.class.getResourceAsStream(
-                "/com/github/manevolent/ts3j/client/ts3j-client.png")) {
-            if (stream != null) {
-                BufferedImage source = ImageIO.read(stream);
-                if (source != null) {
-                    BufferedImage scaled = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-                    java.awt.Graphics2D graphics = scaled.createGraphics();
-                    try {
-                        graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                                RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                        graphics.drawImage(source, 0, 0, width, height, null);
-                    } finally {
-                        graphics.dispose();
-                    }
+        if (state == MicState.APP) {
+            BufferedImage appIcon = loadAppIcon();
+            if (appIcon != null) {
+                BufferedImage scaled = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = scaled.createGraphics();
+                try {
+                    graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                            RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    graphics.drawImage(appIcon, 0, 0, width, height, null);
                     return scaled;
+                } finally {
+                    graphics.dispose();
                 }
             }
-        } catch (Exception ignored) {
-            // Use the generated fallback below when the packaged resource is unavailable.
         }
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = image.createGraphics();
         try {
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            graphics.setColor(new Color(25, 31, 42, 255));
-            graphics.fillRoundRect(1, 1, width - 2, height - 2, width / 3, height / 3);
-            graphics.setColor(new Color(156, 196, 255, 255));
-            graphics.fillRoundRect(width / 3, height / 5, width / 3, height * 3 / 5, 2, 2);
-            graphics.fillRoundRect(width / 5, height / 5, width * 3 / 5, Math.max(2, height / 7), 2, 2);
+            Color color;
+            if (state == MicState.MUTED) color = new Color(207, 62, 83, 255);
+            else if (state == MicState.ACTIVE) color = new Color(55, 185, 131, 255);
+            else color = new Color(154, 160, 178, 255);
+            int diameter = Math.max(8, Math.min(width, height) - 4);
+            int x = (width - diameter) / 2;
+            int y = (height - diameter) / 2;
+            graphics.setColor(color);
+            graphics.fillOval(x, y, diameter, diameter);
         } finally {
             graphics.dispose();
         }
         return image;
+    }
+
+    private static BufferedImage loadAppIcon() {
+        try (InputStream stream = DesktopTray.class.getResourceAsStream(
+                "/com/github/manevolent/ts3j/client/ts3j-client.png")) {
+            return stream == null ? null : ImageIO.read(stream);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

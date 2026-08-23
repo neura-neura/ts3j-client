@@ -367,8 +367,12 @@ public class LocalTeamspeakClientSocket
             if (socket != null && !socket.isClosed())
                 socket.close();
 
-            // Construct new socket
+            // Construct and connect the UDP socket to the TeamSpeak endpoint.
+            // Connecting a datagram socket lets Windows associate replies and
+            // firewall/NAT state with the selected route (including VPNs such
+            // as ZeroTier) instead of leaving the socket completely unbound.
             socket = new DatagramSocket();
+            socket.connect(remote);
 
             // Bind to remote
             this.remote = remote;

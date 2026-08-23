@@ -49,6 +49,7 @@ import javafx.util.Duration;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.net.URL;
+import java.io.IOException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -99,6 +100,8 @@ public final class TeamSpeakDesktopApp extends Application {
     private Button audioButton;
     private Stage stage;
     private DesktopTray desktopTray;
+    private SingleInstanceGuard singleInstanceGuard;
+    private AudioDeviceService audioDeviceService;
     private VoiceNotificationService voiceNotificationService;
     private AppPreferences appPreferences;
     private WindowsStartupManager startupManager;
@@ -116,6 +119,12 @@ public final class TeamSpeakDesktopApp extends Application {
     private Timeline timerTimeline;
     private final Map<Label, VoiceRoomSession> timerLabels = new HashMap<>();
     private final ConnectionProfileStore connectionProfileStore = new ConnectionProfileStore();
+    private volatile double latestMicrophoneLevel;
+    private volatile double latestPlaybackLevel;
+    private ProgressBar audioCaptureMeterControl;
+    private ProgressBar audioPlaybackMeterControl;
+    private Label audioCaptureLevelControl;
+    private Label audioPlaybackLevelControl;
     private final UpdateService updateService = new UpdateService();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "ts3j-client-updates");
@@ -129,12 +138,27 @@ public final class TeamSpeakDesktopApp extends Application {
         boolean compact = getParameters().getRaw().contains("--compact");
         boolean noTray = getParameters().getRaw().contains("--no-tray");
         this.stage = stage;
+        singleInstanceGuard = new SingleInstanceGuard(defaultStatePath().getParent());
+        try {
+            if (!singleInstanceGuard.acquire(this::focusExistingInstance)) {
+                Platform.exit();
+                return;
+            }
+        } catch (IOException error) {
+            Platform.exit();
+            return;
+        }
         appPreferences = new AppPreferences();
         startupManager = new WindowsStartupManager();
         clientVolumeStore = new ClientVolumeStore();
         language = appPreferences.language();
         lightTheme = appPreferences.isLightTheme();
         desktopTray = new DesktopTray(language);
+        audioDeviceService = new AudioDeviceService(appPreferences.captureDevice(),
+                appPreferences.playbackDevice());
+        audioDeviceService.setCaptureLevelListener(this::handleMicrophoneLevel);
+        audioDeviceService.setOutputLevelListener(this::handlePlaybackLevel);
+        audioDeviceService.start();
         voiceNotificationService = new VoiceNotificationService(language,
                 appPreferences.voiceNotifications(), appPreferences.voiceNotificationVolume());
         demoMode = demo;
@@ -984,11 +1008,58 @@ public final class TeamSpeakDesktopApp extends Application {
             setToggleButton(awayButton, false, t("away.available"), t("away.active"));
             setToggleButton(micButton, false, t("mic.available"), t("mic.active"));
             setToggleButton(audioButton, false, t("audio.available"), t("audio.active"));
+            updateTrayMicState(snapshot);
             return;
         }
         setToggleButton(awayButton, local.isAway(), t("away.available"), t("away.active"));
         setToggleButton(micButton, local.isInputMuted(), t("mic.available"), t("mic.active"));
         setToggleButton(audioButton, local.isOutputMuted(), t("audio.available"), t("audio.active"));
+        updateTrayMicState(snapshot);
+    }
+
+    private void handleMicrophoneLevel(double level) {
+        latestMicrophoneLevel = level;
+        Platform.runLater(() -> {
+            if (audioCaptureMeterControl != null) audioCaptureMeterControl.setProgress(level);
+            if (audioCaptureLevelControl != null) audioCaptureLevelControl.setText(audioLevelText(level, true));
+            updateTrayMicState(current);
+        });
+    }
+
+    private void handlePlaybackLevel(double level) {
+        latestPlaybackLevel = level;
+        Platform.runLater(() -> {
+            if (audioPlaybackMeterControl != null) audioPlaybackMeterControl.setProgress(level);
+            if (audioPlaybackLevelControl != null) audioPlaybackLevelControl.setText(audioLevelText(level, false));
+        });
+    }
+
+    private void updateTrayMicState(GatewaySnapshot snapshot) {
+        if (desktopTray == null) return;
+        ClientView local = snapshot == null ? null
+                : snapshot.getClients().get(snapshot.getLocalClientId());
+        boolean inVoiceChannel = snapshot != null
+                && snapshot.getStatus() == ConnectionStatus.CONNECTED_IN_CHANNEL
+                && local != null && local.getChannelId() >= 0;
+        if (inVoiceChannel) {
+            ChannelView channel = snapshot.getChannels().get(local.getChannelId());
+            inVoiceChannel = channel == null || channel.isVoiceCapable();
+        }
+        if (!inVoiceChannel) {
+            desktopTray.setMicState(DesktopTray.MicState.APP);
+        } else if (local.isInputMuted()) {
+            desktopTray.setMicState(DesktopTray.MicState.MUTED);
+        } else if (audioDeviceService != null && audioDeviceService.isVoiceDetected()) {
+            desktopTray.setMicState(DesktopTray.MicState.ACTIVE);
+        } else {
+            desktopTray.setMicState(DesktopTray.MicState.IDLE);
+        }
+    }
+
+    private String audioLevelText(double level, boolean capture) {
+        if (audioDeviceService == null) return t("settings.audio.level.unavailable");
+        if (level >= AudioDeviceService.VOICE_ON_THRESHOLD) return t("settings.audio.level.detected");
+        return t("settings.audio.level.quiet");
     }
 
     private void setToggleButton(Button button, boolean active, String inactiveText, String activeText) {
@@ -1304,6 +1375,16 @@ public final class TeamSpeakDesktopApp extends Application {
         HBox.setHgrow(voiceVolume, Priority.ALWAYS);
         voiceVolumeRow.disableProperty().bind(voiceNotifications.selectedProperty().not());
 
+        Label audioLabel = new Label(t("settings.audio"));
+        audioLabel.getStyleClass().add("settings-section");
+        Label audioHelp = new Label(t("settings.audio.help"));
+        audioHelp.getStyleClass().add("muted-text");
+        constrainSettingsHelp(audioHelp);
+        Button audioSettingsButton = new Button(t("settings.audio.open"));
+        audioSettingsButton.setAccessibleText(t("settings.audio.open.accessible"));
+        audioSettingsButton.setTooltip(new Tooltip(t("settings.audio.open.accessible")));
+        audioSettingsButton.setOnAction(event -> showAudioSettingsDialog());
+
         Label themeLabel = new Label(t("settings.theme"));
         Label themeHelp = new Label(t("settings.theme.help"));
         themeHelp.getStyleClass().add("muted-text");
@@ -1333,7 +1414,8 @@ public final class TeamSpeakDesktopApp extends Application {
         updateButton.setOnAction(event -> checkForUpdates(updateButton, updateProgress, updateStatus));
 
         VBox content = new VBox(10, startWithWindows, startHelp, closeToTray, trayHelp,
-                voiceNotifications, voiceHelp, voiceVolumeRow, themeLabel, themeHelp,
+                voiceNotifications, voiceHelp, voiceVolumeRow, audioLabel, audioHelp,
+                audioSettingsButton, themeLabel, themeHelp,
                 languageLabel, languageChoice, languageHelp, updateLabel, versionLabel,
                 updateRow, updateStatus);
         content.setPadding(new Insets(8, 0, 0, 0));
@@ -1346,6 +1428,161 @@ public final class TeamSpeakDesktopApp extends Application {
             return null;
         });
         dialog.showAndWait();
+    }
+
+    private void showAudioSettingsDialog() {
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.setTitle(t("settings.audio"));
+        dialog.setHeaderText(t("settings.audio.help"));
+        dialog.setResizable(true);
+        DialogPane pane = dialog.getDialogPane();
+        styleDialog(pane);
+        pane.setPrefWidth(560);
+        ButtonType cancel = new ButtonType(t("dialog.cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
+        ButtonType accept = new ButtonType(t("dialog.ok"), ButtonBar.ButtonData.OK_DONE);
+        pane.getButtonTypes().addAll(cancel, accept);
+
+        List<AudioDevice> captureDevices = localizedAudioDevices(AudioDeviceService.listCaptureDevices());
+        List<AudioDevice> playbackDevices = localizedAudioDevices(AudioDeviceService.listPlaybackDevices());
+        ComboBox<AudioDevice> captureChoice = new ComboBox<>();
+        captureChoice.getItems().addAll(captureDevices);
+        captureChoice.setValue(findAudioDevice(captureDevices, appPreferences.captureDevice()));
+        captureChoice.setMaxWidth(Double.MAX_VALUE);
+        captureChoice.setAccessibleText(t("settings.audio.capture.device"));
+        ComboBox<AudioDevice> playbackChoice = new ComboBox<>();
+        playbackChoice.getItems().addAll(playbackDevices);
+        playbackChoice.setValue(findAudioDevice(playbackDevices, appPreferences.playbackDevice()));
+        playbackChoice.setMaxWidth(Double.MAX_VALUE);
+        playbackChoice.setAccessibleText(t("settings.audio.playback.device"));
+        String initialCapture = appPreferences.captureDevice();
+        String initialPlayback = appPreferences.playbackDevice();
+
+        ProgressBar captureMeter = audioMeter(latestMicrophoneLevel, t("settings.audio.capture.level"));
+        ProgressBar playbackMeter = audioMeter(latestPlaybackLevel, t("settings.audio.playback.level"));
+        Label captureValue = new Label(audioLevelText(latestMicrophoneLevel, true));
+        Label playbackValue = new Label(audioLevelText(latestPlaybackLevel, false));
+        captureValue.getStyleClass().add("audio-meter-value");
+        playbackValue.getStyleClass().add("audio-meter-value");
+        captureValue.setMinWidth(74);
+        playbackValue.setMinWidth(74);
+
+        Label captureHelp = new Label(t("settings.audio.capture.help"));
+        captureHelp.getStyleClass().add("muted-text");
+        constrainSettingsHelp(captureHelp);
+        Label playbackHelp = new Label(t("settings.audio.playback.help"));
+        playbackHelp.getStyleClass().add("muted-text");
+        constrainSettingsHelp(playbackHelp);
+
+        HBox captureMeterRow = new HBox(10, captureMeter, captureValue);
+        captureMeterRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(captureMeter, Priority.ALWAYS);
+        HBox playbackMeterRow = new HBox(10, playbackMeter, playbackValue);
+        playbackMeterRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(playbackMeter, Priority.ALWAYS);
+
+        Label captureTitle = new Label("◉  " + t("settings.audio.capture"));
+        captureTitle.getStyleClass().add("audio-section-title");
+        Label playbackTitle = new Label("◉  " + t("settings.audio.playback"));
+        playbackTitle.getStyleClass().add("audio-section-title");
+        Label captureDeviceLabel = new Label(t("settings.audio.capture.device"));
+        Label playbackDeviceLabel = new Label(t("settings.audio.playback.device"));
+        GridPane deviceForm = new GridPane();
+        deviceForm.setHgap(12);
+        deviceForm.setVgap(8);
+        deviceForm.add(captureDeviceLabel, 0, 0);
+        deviceForm.add(captureChoice, 1, 0);
+        deviceForm.add(playbackDeviceLabel, 0, 1);
+        deviceForm.add(playbackChoice, 1, 1);
+        ColumnConstraints labelColumn = new ColumnConstraints();
+        labelColumn.setMinWidth(132);
+        ColumnConstraints valueColumn = new ColumnConstraints();
+        valueColumn.setHgrow(Priority.ALWAYS);
+        deviceForm.getColumnConstraints().addAll(labelColumn, valueColumn);
+
+        Button testSound = new Button(t("settings.audio.test"));
+        testSound.setTooltip(new Tooltip(t("settings.audio.test.tooltip")));
+        testSound.setAccessibleText(t("settings.audio.test.tooltip"));
+        testSound.setOnAction(event -> {
+            AudioDevice selected = playbackChoice.getValue();
+            audioDeviceService.playTestTone(selected == null ? "" : selected.getId());
+        });
+
+        VBox content = new VBox(10,
+                deviceForm,
+                new Separator(),
+                captureTitle, captureMeterRow, captureHelp,
+                new Separator(),
+                playbackTitle, playbackMeterRow, playbackHelp, testSound);
+        content.setPadding(new Insets(8, 0, 0, 0));
+        pane.setContent(content);
+
+        captureChoice.valueProperty().addListener((observable, previous, next) -> {
+            if (next != null) audioDeviceService.setCaptureDeviceId(next.getId());
+        });
+        playbackChoice.valueProperty().addListener((observable, previous, next) -> {
+            if (next != null) audioDeviceService.setPlaybackDeviceId(next.getId());
+        });
+        final boolean[] confirmed = {false};
+        dialog.setResultConverter(button -> {
+            if (button == accept) {
+                confirmed[0] = true;
+                AudioDevice capture = captureChoice.getValue();
+                AudioDevice playback = playbackChoice.getValue();
+                appPreferences.setCaptureDevice(capture == null ? "" : capture.getId());
+                appPreferences.setPlaybackDevice(playback == null ? "" : playback.getId());
+                audioDeviceService.setCaptureDeviceId(capture == null ? "" : capture.getId());
+                audioDeviceService.setPlaybackDeviceId(playback == null ? "" : playback.getId());
+            }
+            return null;
+        });
+        audioCaptureMeterControl = captureMeter;
+        audioPlaybackMeterControl = playbackMeter;
+        audioCaptureLevelControl = captureValue;
+        audioPlaybackLevelControl = playbackValue;
+        try {
+            dialog.showAndWait();
+        } finally {
+            audioCaptureMeterControl = null;
+            audioPlaybackMeterControl = null;
+            audioCaptureLevelControl = null;
+            audioPlaybackLevelControl = null;
+            if (!confirmed[0]) {
+                audioDeviceService.setCaptureDeviceId(initialCapture);
+                audioDeviceService.setPlaybackDeviceId(initialPlayback);
+            }
+        }
+    }
+
+    private static AudioDevice findAudioDevice(List<AudioDevice> devices, String id) {
+        if (devices == null || devices.isEmpty()) return new AudioDevice("", "Default", true);
+        String wanted = id == null ? "" : id.trim();
+        for (AudioDevice device : devices) {
+            if (device.getId().equals(wanted)) return device;
+        }
+        return devices.get(0);
+    }
+
+    private List<AudioDevice> localizedAudioDevices(List<AudioDevice> devices) {
+        if (devices == null || devices.isEmpty()) {
+            return Collections.singletonList(new AudioDevice("", t("settings.audio.default"), true));
+        }
+        List<AudioDevice> localized = new ArrayList<>(devices.size());
+        for (AudioDevice device : devices) {
+            localized.add(device.isSystemDefault()
+                    ? new AudioDevice(device.getId(), t("settings.audio.default"), true)
+                    : device);
+        }
+        return localized;
+    }
+
+    private static ProgressBar audioMeter(double value, String accessibleText) {
+        ProgressBar meter = new ProgressBar(Math.max(0.0D, Math.min(1.0D, value)));
+        meter.setMinWidth(300);
+        meter.setPrefWidth(300);
+        meter.setMaxWidth(Double.MAX_VALUE);
+        meter.getStyleClass().add("audio-meter");
+        meter.setAccessibleText(accessibleText);
+        return meter;
     }
 
     private void checkForUpdates(Button button, ProgressBar progress, Label status) {
@@ -1498,6 +1735,17 @@ public final class TeamSpeakDesktopApp extends Application {
         if (desktopTray != null) desktopTray.show();
     }
 
+    private void focusExistingInstance() {
+        Platform.runLater(() -> {
+            if (stage == null) return;
+            if (desktopTray != null) desktopTray.show();
+            else stage.show();
+            stage.setIconified(false);
+            stage.toFront();
+            stage.requestFocus();
+        });
+    }
+
     private void exitApplication() {
         forceExit = true;
         if (desktopTray != null) desktopTray.close();
@@ -1544,7 +1792,9 @@ public final class TeamSpeakDesktopApp extends Application {
         if (timerTimeline != null) timerTimeline.stop();
         updateExecutor.shutdownNow();
         if (gateway != null) gateway.close();
+        if (audioDeviceService != null) audioDeviceService.close();
         if (voiceNotificationService != null) voiceNotificationService.close();
         if (desktopTray != null) desktopTray.close();
+        if (singleInstanceGuard != null) singleInstanceGuard.close();
     }
 }

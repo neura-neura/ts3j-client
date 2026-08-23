@@ -558,6 +558,33 @@
     -fx-accent: #7ea7dc;
 }
 
+.audio-section-title {
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #dbe4f2;
+}
+
+.audio-meter {
+    -fx-accent: #43c58c;
+    -fx-pref-height: 12px;
+}
+
+.audio-meter .track {
+    -fx-background-color: #303846;
+    -fx-background-radius: 6px;
+}
+
+.audio-meter .bar {
+    -fx-background-color: #43c58c;
+    -fx-background-radius: 6px;
+}
+
+.audio-meter-value {
+    -fx-font-family: "Cascadia Mono", "Consolas", monospace;
+    -fx-font-weight: bold;
+    -fx-text-fill: #a9d9c5;
+}
+
 .voice-volume-label {
     -fx-min-width: 108px;
     -fx-font-weight: 600;
@@ -907,6 +934,22 @@
 
 .theme-light .dialog-pane {
     -fx-background-color: #f4f6fa;
+}
+
+.theme-light .audio-section-title {
+    -fx-text-fill: #2c3d55;
+}
+
+.theme-light .audio-meter .track {
+    -fx-background-color: #c5cedb;
+}
+
+.theme-light .audio-meter .bar {
+    -fx-background-color: #2d9e72;
+}
+
+.theme-light .audio-meter-value {
+    -fx-text-fill: #267454;
 }
 
 .theme-light .error-line {

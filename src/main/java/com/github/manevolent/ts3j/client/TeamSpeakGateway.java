@@ -981,6 +981,11 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                 return "El servidor no pudo validar la identidad de TeamSpeak. "
                         + "Revisa la identidad oficial y vuelve a conectar.";
             }
+            if (normalized.contains("timeout waiting for connected state")) {
+                return "No hubo respuesta del servidor por UDP en el puerto 9987. "
+                        + "El ping puede funcionar aunque UDP esté bloqueado: comprueba ZeroTier/VPN, "
+                        + "el firewall y que TeamSpeak Server escuche en 9987/UDP. No requiere un certificado.";
+            }
         }
         return message == null || message.isEmpty() ? cause.getClass().getSimpleName() : message;
     }
