@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "1.0.4"
+#define AppVersion "1.0.5"
 #endif
 #ifndef AppSource
 #define AppSource "."
@@ -74,25 +74,63 @@ begin
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
 end;
 
+function ClientProcessRunning: Boolean;
+var
+  ResultCode: Integer;
+  Output: TExecOutput;
+  I: Integer;
+begin
+  Result := False;
+  { tasklist is short-lived and lets us bound the shutdown wait without
+    waiting indefinitely on a Java process that is already being torn down. }
+  if not ExecAndCaptureOutput(ExpandConstant('{cmd}'),
+    '/C tasklist /FI "IMAGENAME eq ts3j-client.exe" /NH /FO CSV',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode, Output) then
+  begin
+    { If the query fails, err on the side of forcing the process tree down. }
+    Log('Could not query ts3j-client processes; forcing taskkill.');
+    Result := True;
+    Exit;
+  end;
+  for I := 0 to GetArrayLength(Output.StdOut) - 1 do
+    if Pos('ts3j-client.exe', LowerCase(Output.StdOut[I])) > 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
 procedure CloseRunningClient;
 var
   ResultCode: Integer;
   I: Integer;
 begin
-  { Ask the running app to disconnect cleanly and release its file locks. }
+  Log('Closing running ts3j-client processes before replacing files.');
+
+  { Ask the running app to disconnect cleanly. Do not wait for the Java
+    launcher: the bounded polling below handles both old and new versions. }
   if FileExists(ExpandConstant('{app}\ts3j-client.exe')) then
     Exec(ExpandConstant('{app}\ts3j-client.exe'), '--shutdown',
-      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(750);
+      ExpandConstant('{app}'), SW_HIDE, ewNoWait, ResultCode);
+  Sleep(500);
 
-  { A tray-only process may not respond to WM_CLOSE. The image name is the
-    installed launcher; /T also terminates its bundled Java child process. }
-  for I := 1 to 3 do
+  { A tray-only process may not respond to WM_CLOSE. /T also terminates its
+    bundled Java child process. Every invocation is non-blocking so a broken
+    child cannot freeze the Preparing to Install page. }
+  for I := 1 to 12 do
   begin
+    if not ClientProcessRunning then
+    begin
+      Log('All ts3j-client processes have exited.');
+      Exit;
+    end;
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ts3j-client.exe',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Sleep(750);
+      '', SW_HIDE, ewNoWait, ResultCode);
+    Sleep(250);
   end;
+
+  if ClientProcessRunning then
+    Log('Timed out waiting for ts3j-client processes; continuing with setup.');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
