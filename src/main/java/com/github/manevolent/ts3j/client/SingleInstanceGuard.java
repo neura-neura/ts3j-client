@@ -28,6 +28,7 @@ final class SingleInstanceGuard implements AutoCloseable {
     private ServerSocket serverSocket;
     private Thread listenerThread;
     private Runnable focusAction;
+    private Runnable exitAction;
     private volatile boolean closed;
     private boolean owner;
 
@@ -38,8 +39,13 @@ final class SingleInstanceGuard implements AutoCloseable {
     }
 
     synchronized boolean acquire(Runnable focusAction) throws IOException {
+        return acquire(focusAction, null);
+    }
+
+    synchronized boolean acquire(Runnable focusAction, Runnable exitAction) throws IOException {
         if (owner) return true;
         this.focusAction = focusAction;
+        this.exitAction = exitAction;
         Files.createDirectories(lockPath.getParent());
         lockChannel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         try {
@@ -48,7 +54,7 @@ final class SingleInstanceGuard implements AutoCloseable {
             fileLock = null;
         }
         if (fileLock == null) {
-            notifyExistingInstance();
+            notifyExistingInstance("focus");
             releaseResources(false);
             return false;
         }
@@ -71,6 +77,11 @@ final class SingleInstanceGuard implements AutoCloseable {
         }
     }
 
+    /** Sends the graceful shutdown command used by the installer. */
+    boolean requestExit() {
+        return notifyExistingInstance("exit");
+    }
+
     private void listenForFocusRequests() {
         while (!closed) {
             try (Socket socket = serverSocket.accept()) {
@@ -80,6 +91,12 @@ final class SingleInstanceGuard implements AutoCloseable {
                 String request = reader.readLine();
                 if ("focus".equalsIgnoreCase(request) && focusAction != null) {
                     focusAction.run();
+                    PrintWriter writer = new PrintWriter(new OutputStreamWriter(
+                            socket.getOutputStream(), StandardCharsets.US_ASCII));
+                    writer.println("ok");
+                    writer.flush();
+                } else if ("exit".equalsIgnoreCase(request) && exitAction != null) {
+                    exitAction.run();
                     PrintWriter writer = new PrintWriter(new OutputStreamWriter(
                             socket.getOutputStream(), StandardCharsets.US_ASCII));
                     writer.println("ok");
@@ -95,7 +112,7 @@ final class SingleInstanceGuard implements AutoCloseable {
         }
     }
 
-    private boolean notifyExistingInstance() {
+    private boolean notifyExistingInstance(String request) {
         for (int attempt = 0; attempt < 6; attempt++) {
             try {
                 if (Files.exists(portPath)) {
@@ -105,7 +122,7 @@ final class SingleInstanceGuard implements AutoCloseable {
                         socket.setSoTimeout(1000);
                         PrintWriter writer = new PrintWriter(new OutputStreamWriter(
                                 socket.getOutputStream(), StandardCharsets.US_ASCII));
-                        writer.println("focus");
+                        writer.println(request);
                         writer.flush();
                         return true;
                     }
@@ -160,5 +177,6 @@ final class SingleInstanceGuard implements AutoCloseable {
             lockChannel = null;
         }
         focusAction = null;
+        exitAction = null;
     }
 }

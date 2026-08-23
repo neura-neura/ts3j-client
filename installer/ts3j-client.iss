@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.4"
 #endif
 #ifndef AppSource
 #define AppSource "."
@@ -30,6 +30,11 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile={#AppIcon}
+; The client can stay hidden in the tray and may have Java child processes.
+; Close it explicitly in PrepareToInstall instead of relying on Inno's generic
+; window-close prompt, which cannot always see tray-only JavaFX windows.
+CloseApplications=no
+RestartApplications=no
 Uninstallable=yes
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\ts3j-client.ico
@@ -67,6 +72,33 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+end;
+
+procedure CloseRunningClient;
+var
+  ResultCode: Integer;
+  I: Integer;
+begin
+  { Ask the running app to disconnect cleanly and release its file locks. }
+  if FileExists(ExpandConstant('{app}\ts3j-client.exe')) then
+    Exec(ExpandConstant('{app}\ts3j-client.exe'), '--shutdown',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(750);
+
+  { A tray-only process may not respond to WM_CLOSE. The image name is the
+    installed launcher; /T also terminates its bundled Java child process. }
+  for I := 1 to 3 do
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ts3j-client.exe',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(750);
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  CloseRunningClient;
+  Result := '';
 end;
 
 function FindPreviousMsiInstallLocation(RootKey: Integer; BaseKey: String): String;

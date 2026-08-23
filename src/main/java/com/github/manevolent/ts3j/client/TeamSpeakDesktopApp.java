@@ -140,7 +140,8 @@ public final class TeamSpeakDesktopApp extends Application {
         this.stage = stage;
         singleInstanceGuard = new SingleInstanceGuard(defaultStatePath().getParent());
         try {
-            if (!singleInstanceGuard.acquire(this::focusExistingInstance)) {
+            if (!singleInstanceGuard.acquire(this::focusExistingInstance,
+                    this::exitFromInstaller)) {
                 Platform.exit();
                 return;
             }
@@ -1761,6 +1762,10 @@ public final class TeamSpeakDesktopApp extends Application {
             stage.toFront();
             stage.requestFocus();
         });
+    }
+
+    private void exitFromInstaller() {
+        Platform.runLater(this::exitApplication);
     }
 
     private void exitApplication() {

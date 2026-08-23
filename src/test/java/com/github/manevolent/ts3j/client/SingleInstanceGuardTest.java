@@ -29,4 +29,23 @@ public class SingleInstanceGuardTest {
             Files.deleteIfExists(directory);
         }
     }
+
+    @Test
+    public void shutdownRequestReachesTheExistingInstance() throws Exception {
+        Path directory = Files.createTempDirectory("ts3j-single-instance-exit-");
+        SingleInstanceGuard first = new SingleInstanceGuard(directory);
+        SingleInstanceGuard second = new SingleInstanceGuard(directory);
+        CountDownLatch exit = new CountDownLatch(1);
+        try {
+            assertTrue(first.acquire(() -> { }, exit::countDown));
+            assertTrue(second.requestExit());
+            assertTrue(exit.await(2L, TimeUnit.SECONDS));
+        } finally {
+            second.close();
+            first.close();
+            Files.deleteIfExists(directory.resolve("instance.port"));
+            Files.deleteIfExists(directory.resolve("instance.lock"));
+            Files.deleteIfExists(directory);
+        }
+    }
 }
