@@ -19,6 +19,7 @@ public final class GatewaySnapshot {
     private final Map<Integer, List<ChannelTextMessage>> channelMessages;
     private final Map<Integer, Integer> channelHistoryBoundaries;
     private final boolean sessionStateReady;
+    private final boolean permissionsLimited;
 
     public GatewaySnapshot(ConnectionStatus status, String serverId, String errorMessage,
                            int localClientId, int currentChannelId,
@@ -59,6 +60,20 @@ public final class GatewaySnapshot {
                            Map<Integer, List<ChannelTextMessage>> channelMessages,
                            Map<Integer, Integer> channelHistoryBoundaries,
                            boolean sessionStateReady) {
+        this(status, serverId, errorMessage, localClientId, currentChannelId,
+                channels, clients, sessions, channelMessages, channelHistoryBoundaries,
+                sessionStateReady, false);
+    }
+
+    public GatewaySnapshot(ConnectionStatus status, String serverId, String errorMessage,
+                           int localClientId, int currentChannelId,
+                           Map<Integer, ChannelView> channels,
+                           Map<Integer, ClientView> clients,
+                           SessionSnapshot sessions,
+                           Map<Integer, List<ChannelTextMessage>> channelMessages,
+                           Map<Integer, Integer> channelHistoryBoundaries,
+                           boolean sessionStateReady,
+                           boolean permissionsLimited) {
         this.status = status;
         this.serverId = serverId == null ? "" : serverId;
         this.errorMessage = errorMessage == null ? "" : errorMessage;
@@ -71,6 +86,7 @@ public final class GatewaySnapshot {
         this.channelMessages = copyMessages(channelMessages);
         this.channelHistoryBoundaries = copyBoundaries(channelHistoryBoundaries);
         this.sessionStateReady = sessionStateReady;
+        this.permissionsLimited = permissionsLimited;
     }
 
     public ConnectionStatus getStatus() { return status; }
@@ -94,6 +110,13 @@ public final class GatewaySnapshot {
      * false because the initial channel/client snapshot is still loading.
      */
     public boolean isSessionStateReady() { return sessionStateReady; }
+
+    /**
+     * Returns true when the server accepted this identity but denied one of
+     * the full channel/client listing commands. The snapshot still represents
+     * the channels and users visible through TeamSpeak events.
+     */
+    public boolean isPermissionsLimited() { return permissionsLimited; }
 
     private static Map<Integer, List<ChannelTextMessage>> copyMessages(
             Map<Integer, List<ChannelTextMessage>> source) {

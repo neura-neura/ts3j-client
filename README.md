@@ -332,3 +332,10 @@ in read-only mode and keeps it only in memory. This preserves the server
 permissions associated with the official identity; passwords and other settings
 are not imported. If that database is unavailable, the client falls back to its
 own persisted identity and upgrades it to security level 8 before connecting.
+Some TeamSpeak servers allow a guest identity to connect while denying the
+`channellist` or `clientlist` commands. In that case the client stays connected
+in limited-visibility mode, keeps the channels and users delivered by live
+events, and queries the current user's channel directly when permitted. It
+does not fabricate hidden channels; grant the identity the server's channel
+list permissions or import an authorized identity if the complete tree is
+required.

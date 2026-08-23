@@ -88,6 +88,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private volatile long eventSequence;
     private volatile boolean initialSync;
     private volatile boolean sessionStateReady = true;
+    /** True when the server accepted the connection but hid one or more listings. */
+    private volatile boolean permissionsLimited;
     private volatile boolean closed;
 
     public TeamSpeakGateway(VoiceSessionCoordinator sessions) {
@@ -142,6 +144,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         status = ConnectionStatus.CONNECTING;
         errorMessage = "";
         chatHistoryWarning = "";
+        permissionsLimited = false;
         initialSync = true;
         sessionStateReady = false;
         channelMessages.clear();
@@ -200,6 +203,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                             channelMessages.clear();
                             channelHistoryBoundaries.clear();
                             chatHistoryWarning = "";
+                            permissionsLimited = false;
                             initialSync = false;
                             sessionStateReady = true;
                         }
@@ -390,7 +394,16 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                 LocalTeamspeakClientSocket current = socket;
                 if (current == null) return;
                 try {
-                    current.subscribeAll();
+                    try {
+                        current.subscribeAll();
+                    } catch (Throwable error) {
+                        if (!isInsufficientClientPermissions(error)) throw error;
+                        // Some restricted server groups can subscribe to the
+                        // visible channel but cannot list every channel. The
+                        // notify events and the current-client fallback below
+                        // still provide a useful connected view.
+                        permissionsLimited = true;
+                    }
                     refreshFromServer(current);
                 } catch (Throwable error) {
                     synchronized (TeamSpeakGateway.this) {
@@ -511,15 +524,79 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
 
     private void refreshFromServer(LocalTeamspeakClientSocket current) throws Exception {
         Map<Integer, ChannelView> loadedChannels = new HashMap<>();
-        for (Channel channel : current.listChannels()) {
-            Channel detailed = loadChannelDetails(current, channel);
-            loadedChannels.put(channel.getId(), toChannelView(detailed, null));
+        boolean channelListLoaded = false;
+        boolean limited = permissionsLimited;
+        try {
+            for (Channel channel : current.listChannels()) {
+                Channel detailed = loadChannelDetails(current, channel);
+                loadedChannels.put(channel.getId(), toChannelView(detailed, null));
+            }
+            channelListLoaded = true;
+        } catch (Throwable error) {
+            if (!isInsufficientClientPermissions(error)) throw error;
+            limited = true;
         }
         Map<Integer, ClientView> loadedClients = new HashMap<>();
+        boolean clientListLoaded = false;
+        try {
+            for (Client client : current.listClients()) {
+                ClientView view = toClient(client);
+                loadedClients.put(view.getId(), view);
+            }
+            clientListLoaded = true;
+        } catch (Throwable error) {
+            if (!isInsufficientClientPermissions(error)) throw error;
+            limited = true;
+        }
+
+        // A guest identity may be allowed to connect and receive events while
+        // channellist/clientlist are denied. Ask only for our own record and
+        // the channel we are actually in, which is permitted on TeamSpeak 3
+        // servers with that common permission layout.
+        Client localFallback = null;
+        ChannelView currentChannelFallback = null;
+        if (limited) {
+            try {
+                localFallback = current.getClientInfo(current.getClientId());
+            } catch (Throwable ignored) {
+                // The event snapshot remains the best available source.
+            }
+            if (localFallback != null && localFallback.getChannelId() >= 0) {
+                try {
+                    Channel detailed = current.getChannelInfo(localFallback.getChannelId());
+                    if (detailed != null) {
+                        Map<String, String> properties = new HashMap<>(detailed.getMap());
+                        properties.put("cid", Integer.toString(localFallback.getChannelId()));
+                        currentChannelFallback = toChannelView(new Channel(properties), null);
+                    }
+                } catch (Throwable ignored) {
+                    // Keep any channel-list event already received.
+                }
+            }
+        }
+
+        Map<Integer, ClientView> effectiveClients;
+        synchronized (this) {
+            if (channelListLoaded) {
+                channels.clear();
+                channels.putAll(loadedChannels);
+            } else if (currentChannelFallback != null) {
+                channels.put(currentChannelFallback.getId(), currentChannelFallback);
+            }
+            if (clientListLoaded) {
+                clients.clear();
+                clients.putAll(loadedClients);
+            } else if (localFallback != null) {
+                clients.put(localFallback.getId(), toClient(localFallback));
+            }
+            effectiveClients = new HashMap<>(clients);
+            currentChannelId = findLocalChannel(current.getClientId());
+            status = currentChannelId >= 0
+                    ? ConnectionStatus.CONNECTED_IN_CHANNEL : ConnectionStatus.CONNECTED_NO_CHANNEL;
+            permissionsLimited = limited;
+        }
         Map<Integer, List<Integer>> usersByChannel = new TreeMap<>();
-        for (Client client : current.listClients()) {
-            ClientView view = toClient(client);
-            loadedClients.put(view.getId(), view);
+        for (ClientView view : effectiveClients.values()) {
             if (view.getChannelId() >= 0) {
                 List<Integer> users = usersByChannel.get(view.getChannelId());
                 if (users == null) {
@@ -528,16 +605,6 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                 }
                 users.add(view.getId());
             }
-        }
-
-        synchronized (this) {
-            channels.clear();
-            channels.putAll(loadedChannels);
-            clients.clear();
-            clients.putAll(loadedClients);
-            currentChannelId = findLocalChannel(current.getClientId());
-            status = currentChannelId >= 0
-                    ? ConnectionStatus.CONNECTED_IN_CHANNEL : ConnectionStatus.CONNECTED_NO_CHANNEL;
         }
         Map<Integer, java.util.Collection<Integer>> snapshot = new LinkedHashMap<>();
         snapshot.putAll(usersByChannel);
@@ -790,6 +857,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             channelMessages.clear();
             channelHistoryBoundaries.clear();
             chatHistoryWarning = "";
+            permissionsLimited = false;
             initialSync = false;
             sessionStateReady = true;
         }
@@ -930,7 +998,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         String visibleError = errorMessage.isEmpty() ? chatHistoryWarning : errorMessage;
         return new GatewaySnapshot(status, config == null ? "" : config.serverId(), visibleError,
                 localClientId(), currentChannelId, sortedChannels, sortedClients,
-                sessions.snapshot(), channelMessages, channelHistoryBoundaries, sessionStateReady);
+                sessions.snapshot(), channelMessages, channelHistoryBoundaries,
+                sessionStateReady, permissionsLimited);
     }
 
     private void publish() {
@@ -988,6 +1057,17 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             }
         }
         return message == null || message.isEmpty() ? cause.getClass().getSimpleName() : message;
+    }
+
+    private static boolean isInsufficientClientPermissions(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT)
+                    .contains("insufficient client permissions")) return true;
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static void closeSocket(LocalTeamspeakClientSocket current) {

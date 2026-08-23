@@ -50,4 +50,17 @@ public class GatewaySnapshotTest {
             // expected
         }
     }
+
+    @Test
+    public void restrictedPermissionSnapshotsRemainConnectedAndExposeTheNoticeState() {
+        GatewaySnapshot snapshot = new GatewaySnapshot(ConnectionStatus.CONNECTED_IN_CHANNEL, "server", "",
+                7, 1, Collections.<Integer, ChannelView>emptyMap(),
+                Collections.<Integer, ClientView>emptyMap(),
+                new SessionSnapshot(Collections.<SessionKey, VoiceRoomSession>emptyMap(), 4L),
+                Collections.<Integer, java.util.List<ChannelTextMessage>>emptyMap(),
+                Collections.<Integer, Integer>emptyMap(), true, true);
+
+        assertEquals(ConnectionStatus.CONNECTED_IN_CHANNEL, snapshot.getStatus());
+        assertTrue(snapshot.isPermissionsLimited());
+    }
 }

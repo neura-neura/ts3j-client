@@ -758,12 +758,14 @@ public final class TeamSpeakDesktopApp extends Application {
         if (channel == null) {
             mainContent.getChildren().add(emptyState(snapshot));
             if (!snapshot.getErrorMessage().isEmpty()) addError(snapshot.getErrorMessage());
+            addPermissionsNotice(snapshot);
             return;
         }
 
         if (selectedTextView && channel.isTextCapable()) {
             renderTextChannel(snapshot, channel);
             if (!snapshot.getErrorMessage().isEmpty()) addError(snapshot.getErrorMessage());
+            addPermissionsNotice(snapshot);
             return;
         }
 
@@ -812,6 +814,7 @@ public final class TeamSpeakDesktopApp extends Application {
             mainContent.getChildren().add(emptyLine(t("select.voice")));
         }
         if (!snapshot.getErrorMessage().isEmpty()) addError(snapshot.getErrorMessage());
+        addPermissionsNotice(snapshot);
     }
 
     private Node emptyState(GatewaySnapshot snapshot) {
@@ -1109,6 +1112,20 @@ public final class TeamSpeakDesktopApp extends Application {
             activeTextRoot.getChildren().add(composerIndex, errorLabel);
         } else {
             mainContent.getChildren().add(errorLabel);
+        }
+    }
+
+    private void addPermissionsNotice(GatewaySnapshot snapshot) {
+        if (snapshot == null || !snapshot.isPermissionsLimited()) return;
+        Label notice = new Label(t("connection.limited"));
+        notice.getStyleClass().add("notice-line");
+        notice.setWrapText(true);
+        notice.setMaxWidth(Double.MAX_VALUE);
+        if (activeTextRoot != null) {
+            int composerIndex = Math.max(0, activeTextRoot.getChildren().size() - 1);
+            activeTextRoot.getChildren().add(composerIndex, notice);
+        } else {
+            mainContent.getChildren().add(notice);
         }
     }
 

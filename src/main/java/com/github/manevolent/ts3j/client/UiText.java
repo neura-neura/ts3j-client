@@ -33,6 +33,7 @@ final class UiText {
         put("status.connected.active", "Connected · active channel", "Conectado · canal activo", "已连接 · 活跃频道");
         put("status.connected.none", "Connected · no channel", "Conectado · sin canal", "已连接 · 无频道");
         put("status.error", "Connection error", "Error de conexión", "连接错误");
+        put("connection.limited", "Limited channel view: this identity cannot list every channel. Visible channels and live events remain available; use an authorized TeamSpeak identity to see the rest.", "Vista limitada de canales: esta identidad no puede enumerar todos los canales. Los canales visibles y los eventos en vivo siguen disponibles; usa una identidad autorizada de TeamSpeak para ver el resto.", "频道视图受限：此身份无法列出所有频道。仍可使用可见频道和实时事件；使用有权限的 TeamSpeak 身份可查看其余频道。");
         put("channels.count", "%s · %d channels", "%s · %d canales", "%s · %d 个频道");
         put("server.none", "No server", "Sin servidor", "无服务器");
         put("connecting", "Connecting to the server…", "Conectando al servidor…", "正在连接服务器…");
