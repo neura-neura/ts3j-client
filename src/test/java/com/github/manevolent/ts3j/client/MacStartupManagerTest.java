@@ -1,7 +1,9 @@
 package com.github.manevolent.ts3j.client;
 
+import org.junit.Assume;
 import org.junit.Test;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,6 +45,9 @@ public class MacStartupManagerTest {
 
     @Test
     public void plistEscapesEveryXmlSensitiveLauncherCharacter() {
+        // Windows rejects several of these characters in a filesystem path;
+        // the escaping case is exercised on the POSIX platform it targets.
+        Assume.assumeTrue("POSIX path syntax is required", File.separatorChar == '/');
         Path launcher = Paths.get("/Applications/TS3J & <Client> \"beta\" 'one'/launcher");
 
         String plist = MacStartupManager.plistFor(launcher);
