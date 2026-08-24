@@ -10,7 +10,7 @@ import java.util.Set;
 
 /** Normalized presence event consumed by the session reducer. */
 public final class PresenceDelta {
-    public enum Type { JOIN, LEAVE, MOVE, SNAPSHOT, START }
+    public enum Type { JOIN, LEAVE, MOVE, SNAPSHOT, START, SERVER_START }
 
     private final Type type;
     private final String serverId;
@@ -98,6 +98,17 @@ public final class PresenceDelta {
     public static PresenceDelta start(String serverId, int channelId, Instant observedAt,
                                       String eventId) {
         return new PresenceDelta(Type.START, serverId, -1, null,
+                new SessionKey(serverId, channelId), observedAt, false,
+                eventId, 0L, null, -1);
+    }
+
+    /**
+     * Applies a start received from the server-side timer authority. Unlike a
+     * peer marker, this value is allowed to replace a locally inferred start.
+     */
+    public static PresenceDelta serverStart(String serverId, int channelId,
+                                             Instant observedAt, String eventId) {
+        return new PresenceDelta(Type.SERVER_START, serverId, -1, null,
                 new SessionKey(serverId, channelId), observedAt, false,
                 eventId, 0L, null, -1);
     }

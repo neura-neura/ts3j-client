@@ -107,6 +107,12 @@ public final class VoiceSessionCoordinator {
         return apply(PresenceDelta.start(serverId, channelId, observedAt, eventId));
     }
 
+    /** Applies a start from the authoritative server-side timer service. */
+    public SessionSnapshot adoptServerSessionStart(String serverId, int channelId,
+                                                   Instant observedAt, String eventId) {
+        return apply(PresenceDelta.serverStart(serverId, channelId, observedAt, eventId));
+    }
+
     public Clock getClock() {
         return clock;
     }

@@ -1276,10 +1276,6 @@ public final class TeamSpeakDesktopApp extends Application {
         PasswordField password = new PasswordField();
         password.setText(saved.getPassword());
         password.setAccessibleHelp(t("connection.password.help"));
-        TextField state = new TextField(saved.getStatePath().toString());
-        state.setPrefColumnCount(30);
-        state.setAccessibleHelp(t("connection.state.help"));
-
         GridPane form = new GridPane();
         form.setHgap(12);
         form.setVgap(10);
@@ -1288,7 +1284,6 @@ public final class TeamSpeakDesktopApp extends Application {
         form.addRow(1, new Label(t("connection.port")), port);
         form.addRow(2, new Label(t("connection.nickname")), nickname);
         form.addRow(3, new Label(t("connection.password")), password);
-        form.addRow(4, new Label(t("connection.state")), state);
         ColumnConstraints labelColumn = new ColumnConstraints();
         labelColumn.setMinWidth(120);
         form.getColumnConstraints().add(labelColumn);
@@ -1298,14 +1293,11 @@ public final class TeamSpeakDesktopApp extends Application {
         dialog.setResultConverter(button -> {
             if (button != connect) return null;
             try {
-                String stateText = state.getText().trim();
-                if (stateText.isEmpty()) throw new IllegalArgumentException(t("connection.state.required"));
-                Path statePath = Paths.get(stateText);
                 String passwordText = password.getText();
                 ConnectionConfig configuration = new ConnectionConfig(host.getText(), port.getText(),
-                        passwordText, nickname.getText(), statePath);
+                        passwordText, nickname.getText(), null);
                 connectionProfileStore.save(host.getText(), port.getText(), nickname.getText(),
-                        passwordText, statePath);
+                        passwordText, null);
                 return configuration;
             } catch (RuntimeException error) {
                 showInfo(t("invalid.data"), error.getMessage());
@@ -1317,13 +1309,10 @@ public final class TeamSpeakDesktopApp extends Application {
         // so the next dialog still opens with a usable connection profile.
         dialog.setOnHidden(event -> {
             try {
-                String stateText = state.getText().trim();
-                if (stateText.isEmpty()) return;
-                Path statePath = Paths.get(stateText);
                 new ConnectionConfig(host.getText(), port.getText(), password.getText(),
-                        nickname.getText(), statePath);
+                        nickname.getText(), null);
                 connectionProfileStore.save(host.getText(), port.getText(), nickname.getText(),
-                        password.getText(), statePath);
+                        password.getText(), null);
             } catch (RuntimeException ignored) {
                 // The result converter already reports invalid OK submissions.
             }

@@ -190,7 +190,7 @@ application has no Inno Setup runtime dependency). The modern deliverable is
 For an Apple Silicon macOS installer, run the independent macOS build script:
 
 ```bash
-./installer/build-installer-macos.sh 1.0.13
+./installer/build-installer-macos.sh 1.0.14
 ```
 
 It requires JDK 17+, Maven, and the macOS command-line tools. The build runs the
@@ -204,24 +204,21 @@ local testing. Public distribution still requires an Apple Developer ID and
 notarization.
 
 The preview is explicit demo data. A real connection starts from the
-`Connect` button and asks for host, an optional port, nickname, password, and
-a shared session-state file. Leave the port empty to use TeamSpeak 3's standard
-port `9987`, as in the official client when connecting with only an address.
-Put the state file on a shared filesystem when several app instances must see
-the same `voiceSessionStart`. In addition, current ts3j-client instances
-advertise a compact session marker through a private TeamSpeak message when
-one app instance joins another app instance already in the channel. Restricted
-identities also use a namespaced channel-message request/response fallback, so
-the peers do not need to discover one another's `client_id` or metadata. Both
-control messages are consumed internally and never rendered as chat, allowing
-separate computers to converge without a shared folder. If the first occupant
-is the official client or an older client that does not advertise this protocol,
-the normal TeamSpeak protocol still cannot reveal the historical start.
+`Connect` button and asks for host, an optional port, nickname, and password.
+Leave the port empty to use TeamSpeak 3's standard port `9987`, as in the
+official client when connecting with only an address.
 
-The connection form remembers the last host, port, nickname, password, and
-state-file path for the current operating-system user. These values are stored in the
-local Java Preferences profile and the password is never written to application
-logs or included in `ConnectionConfig.toString()`.
+The desktop no longer creates or persists a timer. The companion
+`ts3j-session-timer` service runs beside the TeamSpeak server, owns the
+zero-to-one/one-to-zero transitions, persists `voiceSessionStart`, and sends
+an authoritative marker to every connected client. The desktop keeps only the
+in-memory channel occupancy needed to render that server-provided start; the
+old shared state-file field is retained only as a source-compatibility detail.
+
+The connection form remembers the last host, port, nickname, and password for
+the current operating-system user. These values are stored in the local Java
+Preferences profile and the password is never written to application logs or
+included in `ConnectionConfig.toString()`.
 
 TeamSpeak voice transport is UDP. For a private address such as
 `192.168.196.65`, the computer running the client must be on the same LAN/VPN
@@ -265,29 +262,20 @@ that local history followed by `*** End of chat history` and then new live
 messages. Messages sent while this application was offline are not invented:
 only messages actually observed by this instance are stored.
 
-The timer is derived from a persisted UTC `Instant` and the set of users in a
-channel. A join observed as a real zero-to-one transition starts a session;
-duplicate joins are idempotent, moves update both channels, and the record is
-removed when the last user leaves. TeamSpeak's `client_lastconnected`,
-`connection_connected_time`, and `seconds_empty` fields describe an individual
-server connection or how long an empty channel has been empty; none is the
-start of the current occupied channel session. The client therefore never
-uses an individual connection time as a channel timer.
+The timer displayed by the desktop is the server-provided UTC `Instant`. The
+server service counts real users (not its own ServerQuery connection), starts
+on the first user, keeps the same start while anyone remains connected, and
+clears it only after the last user leaves. TeamSpeak's
+`client_lastconnected`, `connection_connected_time`, and `seconds_empty` fields
+describe an individual server connection or how long an empty channel has been
+empty; none is the start of the current occupied server session.
 
-If the official TeamSpeak client occupied a channel before this app connected,
+If the server-side timer service is not installed or cannot reach ServerQuery,
 the historical snapshot is marked `startKnown=false`. The UI presents the
 channel as `Active` with a neutral “Session active before connecting”
-note, rather than showing an error or inventing a numeric duration. The exact
-time becomes available when an instance with the shared state file has observed
-the zero-to-one transition, or when a server-side monitor/plugin records channel
-move events into that shared state. The start cannot be reconstructed
-retroactively from the normal client protocol. If a stale known or unknown
-record is reconciled with a snapshot containing only this application's client,
-the gateway treats that local join as a fresh zero-to-one observation and starts
-a new exact timer. When another user is already present, a persisted start from
-the newly connecting computer is discarded as potentially stale; the gateway
-uses the existing peer's session marker when available, or remains `Active`
-without inventing a numeric duration.
+note, rather than inventing a numeric duration. The exact time becomes
+available when the authoritative service sends its marker. The normal client
+protocol cannot reconstruct a session that predates the service.
 
 The desktop client exposes the TeamSpeak `clientupdate` controls for away
 status, manual microphone mute (`client_input_muted`) and speakers/headphones

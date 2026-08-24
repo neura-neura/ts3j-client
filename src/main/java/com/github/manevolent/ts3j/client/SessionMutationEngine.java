@@ -50,6 +50,9 @@ final class SessionMutationEngine {
             case START:
                 adoptStart(state, delta.getTo(), delta.getObservedAt());
                 break;
+            case SERVER_START:
+                adoptServerStart(state, delta.getTo(), delta.getObservedAt());
+                break;
             default:
                 throw new IllegalStateException("Unsupported delta: " + delta.getType());
         }
@@ -219,6 +222,14 @@ final class SessionMutationEngine {
         boolean stillLocalBootstrap = current.isLocallyBootstrapped()
                 && current.getPresentUsers().size() <= 1;
         state.sessions.put(key, current.withStart(start, true, stillLocalBootstrap,
+                current.getPresentUsers(), state.revision + 1));
+    }
+
+    private static void adoptServerStart(SessionState state, SessionKey key, Instant start) {
+        if (key == null || start == null) return;
+        VoiceRoomSession current = state.sessions.get(key);
+        if (current == null || !current.isOccupied()) return;
+        state.sessions.put(key, current.withStart(start, true, false,
                 current.getPresentUsers(), state.revision + 1));
     }
 }

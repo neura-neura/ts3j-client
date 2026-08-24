@@ -168,9 +168,9 @@ final class UiText {
         put("settings.audio.level.detected", "Detected", "Detectado", "已检测");
         put("timer.active", "Active", "En curso", "进行中");
         put("timer.none", "No active voice session in this channel.", "No hay una sesión de voz activa en este canal.", "此频道没有活跃的语音会话。");
-        put("timer.unknown", "This session started before this instance connected. The exact start will appear when it is available in shared state or recorded by an authoritative monitor.", "Sesión activa antes de esta instancia. El inicio exacto aparecerá cuando exista en el estado compartido o lo registre un monitor autoritativo.", "此会话在本实例连接前已开始。共享状态或权威监视器记录后会显示准确开始时间。");
+        put("timer.unknown", "Waiting for the server timer authority to report the session start.", "Esperando a que el temporizador del servidor informe el inicio de la sesión.", "正在等待服务器计时器报告会话开始时间。");
         put("timer.start", "Shared session start: %s", "Inicio de sesión compartida: %s", "共享会话开始：%s");
-        put("timer.inherited", "Session active before connecting · the exact start is preserved in shared state.", "Sesión activa desde antes de conectar · el inicio exacto se conserva en el estado compartido.", "连接前会话已处于活动状态 · 准确开始时间保存在共享状态中。");
+        put("timer.inherited", "Session active before connecting · start received from the server.", "La sesión ya estaba activa · el inicio fue recibido del servidor.", "连接前会话已处于活动状态 · 开始时间由服务器提供。");
         put("dialog.title", "Message", "Mensaje", "消息");
         put("error.prefix", "!  ", "!  ", "!  ");
     }

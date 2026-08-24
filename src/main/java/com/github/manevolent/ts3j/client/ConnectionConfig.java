@@ -11,6 +11,7 @@ public final class ConnectionConfig {
     private final int port;
     private final String password;
     private final String nickname;
+    /** Legacy field retained for source compatibility; the server owns timer state now. */
     private final Path sessionStatePath;
 
     public ConnectionConfig(String host, int port, String password, String nickname,

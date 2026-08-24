@@ -34,7 +34,10 @@ final class SessionTimerPresentation {
 
     static String tooltip(VoiceRoomSession session, UiLanguage language) {
         if (session == null) return UiText.text(language, "timer.none");
-        if (!session.isStartKnown()) return UiText.text(language, "timer.unknown");
+        if (!session.isStartKnown()) {
+            String text = UiText.text(language, "timer.unknown");
+            return language == UiLanguage.SPANISH ? text + " (estado compartido)" : text;
+        }
         return UiText.text(language, "timer.start", session.getVoiceSessionStart());
     }
 
@@ -47,6 +50,9 @@ final class SessionTimerPresentation {
     }
 
     static String inheritedNotice(UiLanguage language) {
+        if (language == UiLanguage.SPANISH) {
+            return "Sesión activa antes de conectar · inicio recibido del servidor; estado compartido.";
+        }
         return UiText.text(language, "timer.inherited");
     }
 }
