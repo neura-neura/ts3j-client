@@ -190,7 +190,7 @@ public class VoiceSessionCoordinatorTest {
     }
 
     @Test
-    public void localBootstrapKeepsKnownStartWhenAnotherUserIsPresent() {
+    public void localBootstrapDropsPersistedKnownStartWhenAnotherUserIsPresent() {
         VoiceSessionCoordinator coordinator = coordinator(new InMemoryVoiceSessionRepository());
         coordinator.join(SERVER, 10, 102, TEN, false, "known-join", 1);
 
@@ -199,9 +199,51 @@ public class VoiceSessionCoordinatorTest {
         VoiceRoomSession session = session(coordinator.reconcile(SERVER, stillOccupied, EIGHTEEN,
                 "known-with-local", 0, 101), 10);
 
-        assertTrue(session.isStartKnown());
-        assertEquals(TEN, session.getVoiceSessionStart());
+        assertFalse(session.isStartKnown());
+        assertEquals(null, session.getVoiceSessionStart());
         assertEquals(2, session.getPresentUsers().size());
+    }
+
+    @Test
+    public void newClientUsesExistingPeerMarkerInsteadOfItsPersistedTimer() {
+        VoiceSessionCoordinator mac = coordinator(new InMemoryVoiceSessionRepository());
+        Map<Integer, java.util.Collection<Integer>> macOnly = new LinkedHashMap<>();
+        macOnly.put(10, Collections.<Integer>singleton(101));
+        VoiceRoomSession macSession = session(mac.reconcile(SERVER, macOnly, EIGHTEEN,
+                "mac-empty-server", 0, 101), 10);
+
+        VoiceSessionCoordinator windows = coordinator(new InMemoryVoiceSessionRepository());
+        windows.join(SERVER, 10, 102, TEN, false, "stale-windows-state", 1);
+        Map<Integer, java.util.Collection<Integer>> occupied = new LinkedHashMap<>();
+        occupied.put(10, Arrays.<Integer>asList(101, 102));
+        VoiceRoomSession beforeMarker = session(windows.reconcile(SERVER, occupied, EIGHTEEN,
+                "windows-joins-occupied-server", 0, 102), 10);
+
+        assertTrue(macSession.isStartKnown());
+        assertEquals(EIGHTEEN, macSession.getVoiceSessionStart());
+        assertFalse(beforeMarker.isStartKnown());
+        assertEquals(null, beforeMarker.getVoiceSessionStart());
+
+        VoiceRoomSession afterMarker = session(windows.adoptSessionStart(SERVER, 10,
+                macSession.getVoiceSessionStart(), "mac-session-marker"), 10);
+        assertTrue(afterMarker.isStartKnown());
+        assertEquals(EIGHTEEN, afterMarker.getVoiceSessionStart());
+        assertEquals(2, afterMarker.getPresentUsers().size());
+    }
+
+    @Test
+    public void stalePeerMarkerCannotReplaceFreshLocalBootstrap() {
+        VoiceSessionCoordinator coordinator = coordinator(new InMemoryVoiceSessionRepository());
+        Map<Integer, java.util.Collection<Integer>> localOnly = new LinkedHashMap<>();
+        localOnly.put(10, Collections.<Integer>singleton(101));
+        coordinator.reconcile(SERVER, localOnly, EIGHTEEN, "fresh-local-bootstrap", 0, 101);
+
+        VoiceRoomSession protectedStart = session(coordinator.adoptSessionStart(SERVER, 10,
+                TEN, "stale-peer-marker"), 10);
+
+        assertTrue(protectedStart.isStartKnown());
+        assertEquals(EIGHTEEN, protectedStart.getVoiceSessionStart());
+        assertEquals(Collections.singleton(101), protectedStart.getPresentUsers());
     }
 
     @Test

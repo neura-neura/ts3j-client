@@ -10,6 +10,10 @@ public class UiTextTest {
         assertEquals("Preferences", UiText.text(UiLanguage.ENGLISH, "settings.title"));
         assertEquals("Preferencias", UiText.text(UiLanguage.SPANISH, "settings.title"));
         assertEquals("偏好设置", UiText.text(UiLanguage.CHINESE, "settings.title"));
+        assertEquals("Iniciar con macOS y abrir en la barra de menús",
+                UiText.text(UiLanguage.SPANISH, "settings.startup.macos"));
+        assertEquals("通过扬声器播报 TeamSpeak 操作。使用 macOS 语音，并以内置的应用提示音作为备用。",
+                UiText.text(UiLanguage.CHINESE, "settings.voice.help.macos"));
         assertEquals("English", UiLanguage.fromCode(null).toString());
     }
 

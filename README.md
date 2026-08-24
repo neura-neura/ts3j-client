@@ -187,6 +187,22 @@ Building the EXE requires JDK 17+, Maven, and Inno Setup 6 (the installed
 application has no Inno Setup runtime dependency). The modern deliverable is
 `dist\ts3j-client-<version>.exe`; older MSI/WiX artifacts are legacy builds.
 
+For an Apple Silicon macOS installer, run the independent macOS build script:
+
+```bash
+./installer/build-installer-macos.sh 1.0.6
+```
+
+It requires JDK 17+, Maven, and the macOS command-line tools. The build runs the
+test suite, creates a self-contained ARM64 `.app`, adds the microphone privacy
+description, signs the app, and produces
+`dist/ts3j-client-<version>-macos-aarch64.dmg`. The DMG contains the app and an
+Applications shortcut for normal drag-and-drop installation; the installed app
+does not require a separate Java installation. Without
+`MACOS_SIGNING_IDENTITY`, the script uses an ad-hoc signature suitable for
+local testing. Public distribution still requires an Apple Developer ID and
+notarization.
+
 The preview is explicit demo data. A real connection starts from the
 `Connect` button and asks for host, an optional port, nickname, password, and
 a shared session-state file. Leave the port empty to use TeamSpeak 3's standard
@@ -201,7 +217,7 @@ official client or an older client that does not advertise this protocol, the
 normal TeamSpeak protocol still cannot reveal the historical start.
 
 The connection form remembers the last host, port, nickname, password, and
-state-file path for the current Windows user. These values are stored in the
+state-file path for the current operating-system user. These values are stored in the
 local Java Preferences profile and the password is never written to application
 logs or included in `ConnectionConfig.toString()`.
 
@@ -219,8 +235,9 @@ next launch. The Preferences dialog provides a persistent language selector
 with English as the default, plus Spanish and Simplified Chinese translations;
 changing the language rebuilds the visible shell immediately. The generated
 pastel iOS-style icon is available as the PNG master at
-`installer/assets/ts3j-client.png` and as a multi-size Windows ICO at
-`installer/assets/ts3j-client.ico`; the same PNG is bundled into the JavaFX
+`installer/assets/ts3j-client.png`, as a multi-size Windows ICO at
+`installer/assets/ts3j-client.ico`, and as a macOS ICNS at
+`installer/assets/ts3j-client.icns`; the same PNG is bundled into the JavaFX
 resources and used by the window chrome and system tray. The installer assigns
 that ICO explicitly to both shortcuts, recreates stale shortcut files during
 reinstall, and asks Windows to refresh its icon cache after setup.
@@ -241,7 +258,7 @@ may omit `target` from a channel notification; the gateway resolves that event
 from the sender/subscribed channel and also shows an accepted outgoing message
 locally when the server does not echo it back. The gateway also appends each
 accepted message to a local per-server history under
-`%USERPROFILE%\.ts3j-client\chat-history`; after reconnecting, the UI renders
+`~/.ts3j-client/chat-history`; after reconnecting, the UI renders
 that local history followed by `*** End of chat history` and then new live
 messages. Messages sent while this application was offline are not invented:
 only messages actually observed by this instance are stored.
@@ -265,15 +282,17 @@ move events into that shared state. The start cannot be reconstructed
 retroactively from the normal client protocol. If a stale known or unknown
 record is reconciled with a snapshot containing only this application's client,
 the gateway treats that local join as a fresh zero-to-one observation and starts
-a new exact timer; if another user is still present, its previous start is
-preserved (or remains `Active` when no start was recorded).
+a new exact timer. When another user is already present, a persisted start from
+the newly connecting computer is discarded as potentially stale; the gateway
+uses the existing peer's session marker when available, or remains `Active`
+without inventing a numeric duration.
 
 The desktop client exposes the TeamSpeak `clientupdate` controls for away
 status, manual microphone mute (`client_input_muted`) and speakers/headphones
 mute (`client_output_muted`). Their accepted state is reflected in the local
 client row and in the other clients' channel lists through TeamSpeak events.
-The bundled ts3j layer still does not provide a Windows capture/playback
-device implementation, so these controls change the authoritative TeamSpeak
+The bundled ts3j layer still does not provide a TeamSpeak capture/playback
+transport implementation, so these controls change the authoritative TeamSpeak
 mute state; the local Java Sound monitor described below is intentionally
 separate from that transport state.
 
@@ -285,7 +304,7 @@ applies this modifier in its local playback mixer, while the current ts3j
 desktop shell does not yet ship a playback device/mixer, so the setting is
 stored and displayed without pretending to change server audio.
 
-The desktop shell allows only one running instance per Windows user. Launching
+The desktop shell allows only one running instance per operating-system user. Launching
 the executable again sends a local focus request to the existing process and
 restores its window (including from the tray). When the user is not in a voice
 channel, the tray shows the application logo. Inside a voice channel it becomes
@@ -305,39 +324,48 @@ device therefore prepares local monitoring but does not, by itself, route
 TeamSpeak voice through that device. The microphone meter is processed locally
 only while the app is open; its level is not uploaded by this client.
 
-The application preferences dialog also exposes “Start with Windows and open
-in the tray” and “Minimize to the tray when closing the window”. Startup is
-registered in the current user's Windows Startup folder through a small
-launcher script and does not require administrator privileges. The tray menu
-can restore the window or exit the application.
+The application preferences dialog also exposes platform-native startup and
+close-to-tray behavior. Windows uses the current user's Startup folder; macOS
+uses the current user's `~/Library/LaunchAgents` folder and opens in the menu
+bar. Neither path requires administrator privileges. The tray/menu-bar menu can
+restore the window or exit the application.
 
 Voice notifications are enabled by default and can be disabled from
 Preferences. The alert-volume slider in the same panel is persisted locally
-and applies to both Windows speech and the bundled cues. Fixed actions such as
+and applies to system speech and the bundled cues. Fixed actions such as
 mute, away, connect, and chat play the bundled cue first; dynamic events such as
-a user joining or leaving a channel use the Windows SAPI voice so the
+a user joining or leaving a channel use Windows SAPI or macOS `say` so the
 notification can include the server, channel, and nickname. The selected
 English, Spanish, or Chinese interface language selects the corresponding
-installed SAPI voice when one is available. A small original cue pack is
+installed system voice when one is available. A small original cue pack is
 bundled inside the application as a fallback, so notifications do not depend
 on the official TeamSpeak client being installed. TeamSpeak's copyrighted
 sound-pack files are not copied or redistributed.
+On macOS, bundled WAV cues and generated speech are routed through the native
+`afplay` CoreAudio player so they follow the active system output device.
 The outbound chat cue is emitted as soon as the local send is queued and uses
 a dedicated notification lane, so it is not delayed by a network round-trip or
 by a longer announcement already being spoken.
 
 Updates are available from the Preferences dialog. The client checks the
-public GitHub release for `neura-neura/ts3j-client`, downloads the Windows
-installer when a newer semantic version is available, closes the running
-application completely, and starts the installer. A release without a Windows
-installer asset is rejected instead of downloading an unknown file.
+public GitHub release for `neura-neura/ts3j-client`, selects an EXE on Windows
+or a DMG/PKG on macOS when a newer semantic version is available, verifies a
+downloaded macOS installer, closes the running application completely, and
+starts the installer. Assets for another operating system are never downloaded.
 
-On Windows, when the official TeamSpeak 3 client is installed, the desktop
-client reads the active identity record from `%APPDATA%\TS3Client\settings.db`
-in read-only mode and keeps it only in memory. This preserves the server
+When the official TeamSpeak 3 client is installed, the desktop client reads the
+active identity record from `%APPDATA%\TS3Client\settings.db` on Windows or
+`~/Library/Application Support/TeamSpeak 3/settings.db` on macOS. It opens the
+database in read-only mode and keeps the identity only in memory. This preserves the server
 permissions associated with the official identity; passwords and other settings
 are not imported. If that database is unavailable, the client falls back to its
 own persisted identity and upgrades it to security level 8 before connecting.
+The official client is therefore optional: on the first run without
+`settings.db`, ts3j-client creates a new random identity at
+`~/.ts3j-client/identity.ini`, keeps it stable for that computer, and reuses it
+on later connections. A newly generated identity has no permissions inherited
+from another TeamSpeak account, so it cannot by itself reveal channels that the
+server does not allow it to list.
 Some TeamSpeak servers allow a guest identity to connect while denying the
 `channellist` or `clientlist` commands. In that case the client stays connected
 in limited-visibility mode, keeps the channels and users delivered by live

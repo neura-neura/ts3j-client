@@ -10,9 +10,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -159,8 +162,33 @@ final class VoiceNotificationService implements AutoCloseable {
     private boolean playSound(String fileName, int volume) {
         URL resource = getClass().getResource(SOUND_RESOURCE_ROOT + fileName);
         if (resource == null) return false;
+        if (isMacOs() && playSoundWithMacOs(resource, volume)) return true;
         if (isWindows() && playSoundWithWindowsMixer(resource, volume)) return true;
         return playSoundWithJavaSound(resource, volume);
+    }
+
+    /**
+     * macOS's system player follows the active CoreAudio output route more
+     * reliably than Java Sound's Clip mixer inside a bundled runtime. Keep the
+     * app-owned WAVs in a temporary file only for the duration of afplay.
+     */
+    private boolean playSoundWithMacOs(URL resource, int volume) {
+        Path temporaryWave = null;
+        try (InputStream input = resource.openStream()) {
+            temporaryWave = Files.createTempFile("ts3j-client-cue-", ".wav");
+            Files.copy(input, temporaryWave, StandardCopyOption.REPLACE_EXISTING);
+            return runProcess(macPlaybackCommand(temporaryWave, volume), 15L);
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (temporaryWave != null) {
+                try {
+                    Files.deleteIfExists(temporaryWave);
+                } catch (Exception ignored) {
+                    // The short-lived file is safe to clean up later.
+                }
+            }
+        }
     }
 
     private boolean playSoundWithJavaSound(URL resource, int volume) {
@@ -274,6 +302,7 @@ final class VoiceNotificationService implements AutoCloseable {
     }
 
     private boolean speak(String message, Locale locale, int volume) {
+        if (isMacOs()) return speakWithMacOs(message, locale, volume);
         if (!isWindows() || message == null || message.trim().isEmpty()) return false;
         String languageTag = locale == null ? "en" : locale.getLanguage();
         String script = "$ErrorActionPreference='Stop';"
@@ -285,6 +314,85 @@ final class VoiceNotificationService implements AutoCloseable {
                 + "$s.Volume=" + boundedVolume(volume) + ";"
                 + "$s.Speak('" + escapeSingleQuoted(message) + "')}finally{$s.Dispose()}";
         return runPowerShell(script, 15L);
+    }
+
+    private boolean speakWithMacOs(String message, Locale locale, int volume) {
+        if (message == null || message.trim().isEmpty()) return false;
+        Path temporaryAudio = null;
+        try {
+            temporaryAudio = Files.createTempFile("ts3j-client-speech-", ".aiff");
+            if (!runProcess(macSayCommand(message, locale, temporaryAudio, true), 15L)) {
+                Files.deleteIfExists(temporaryAudio);
+                if (!runProcess(macSayCommand(message, locale, temporaryAudio, false), 15L)) {
+                    return false;
+                }
+            }
+            return runProcess(macPlaybackCommand(temporaryAudio, volume), 15L);
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (temporaryAudio != null) {
+                try {
+                    Files.deleteIfExists(temporaryAudio);
+                } catch (Exception ignored) {
+                    // The short-lived speech file is safe to clean up later.
+                }
+            }
+        }
+    }
+
+    static List<String> macSayCommand(String message, Locale locale, Path output) {
+        return macSayCommand(message, locale, output, true);
+    }
+
+    private static List<String> macSayCommand(String message, Locale locale, Path output,
+                                               boolean selectVoice) {
+        if (message == null) throw new IllegalArgumentException("message");
+        if (output == null) throw new IllegalArgumentException("output");
+        List<String> command = new ArrayList<>();
+        command.add("/usr/bin/say");
+        String voice = selectVoice ? preferredMacVoice(locale) : null;
+        if (voice != null) {
+            command.add("-v");
+            command.add(voice);
+        }
+        command.add("-o");
+        command.add(output.toAbsolutePath().normalize().toString());
+        command.add(message);
+        return command;
+    }
+
+    static List<String> macPlaybackCommand(Path audio, int volume) {
+        if (audio == null) throw new IllegalArgumentException("audio");
+        return Arrays.asList("/usr/bin/afplay", "-v",
+                Double.toString(boundedVolume(volume) / 100.0D),
+                audio.toAbsolutePath().normalize().toString());
+    }
+
+    static String preferredMacVoice(Locale locale) {
+        String language = locale == null ? "en" : locale.getLanguage().toLowerCase(Locale.ROOT);
+        String country = locale == null ? "" : locale.getCountry().toUpperCase(Locale.ROOT);
+        if ("es".equals(language)) return "ES".equals(country) ? "Mónica" : "Paulina";
+        if ("zh".equals(language)) return "TW".equals(country) ? "Meijia" : "Tingting";
+        if ("en".equals(language)) return "GB".equals(country) ? "Daniel" : "Samantha";
+        return null;
+    }
+
+    private boolean runProcess(List<String> command, long timeoutSeconds) {
+        if (command == null || command.isEmpty()) return false;
+        Process process = null;
+        try {
+            process = new ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                    .start();
+            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            return finished && process.exitValue() == 0;
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
+        }
     }
 
     private boolean runPowerShell(String script, long timeoutSeconds) {
@@ -360,6 +468,10 @@ final class VoiceNotificationService implements AutoCloseable {
 
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static boolean isMacOs() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     }
 
     private static int boundedVolume(int value) {

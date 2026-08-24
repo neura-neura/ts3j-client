@@ -148,6 +148,13 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         if (connectionConfig.getSessionStatePath() != null) {
             sessions.useRepository(new FileVoiceSessionRepository(connectionConfig.getSessionStatePath()));
         }
+        // A persisted record cannot prove that the server stayed occupied
+        // while this client was disconnected. Start this connection from the
+        // server's next authoritative snapshot; a peer marker can restore a
+        // known start when another client is already present.
+        sessions.reconcile(connectionConfig.serverId(),
+                Collections.<Integer, java.util.Collection<Integer>>emptyMap(), clock.instant(),
+                gatewayEventId("connection-reset", Collections.<String, String>emptyMap()), 0L);
         status = ConnectionStatus.CONNECTING;
         errorMessage = "";
         chatHistoryWarning = "";
@@ -507,6 +514,16 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private void adoptOrQueueSessionStart(String serverId, int channelId,
                                           Instant start, String eventId) {
         SessionKey key = new SessionKey(serverId, channelId);
+        // During the initial snapshot the repository can still contain a
+        // persisted timer from an older occupancy. Defer peer markers until
+        // that snapshot has classified the channel, otherwise a fresh marker
+        // can be compared against (and rejected by) the stale timer.
+        if (initialSync || !sessionStateReady) {
+            synchronized (this) {
+                pendingSessionMarkers.put(key, new PendingSessionMarker(start, clock.instant()));
+            }
+            return;
+        }
         VoiceRoomSession current = sessions.snapshot().get(key);
         if (current != null && current.isOccupied()) {
             sessions.adoptSessionStart(serverId, channelId, start, eventId);
@@ -561,6 +578,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             public void run() {
                 try {
                     if (socket != expectedSocket) return;
+                    if (initialSync || !sessionStateReady) return;
                     Client peer = expectedSocket.getClientInfo(peerId);
                     if (peer == null || !CLIENT_SESSION_METADATA.equals(
                             peer.get("client_meta_data"))) return;
@@ -762,10 +780,14 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         sessions.reconcile(config.serverId(), snapshot, clock.instant(),
                 gatewayEventId("snapshot", Collections.<String, String>emptyMap()), 0L,
                 current.getClientId());
+        // A marker may have arrived while the snapshot was being assembled.
+        // Apply once before and once after publishing readiness so a marker
+        // queued during the transition cannot be stranded.
         applyPendingSessionMarkers();
-        requestPeerSessionMarkers(current, effectiveClients);
         initialSync = false;
         sessionStateReady = true;
+        applyPendingSessionMarkers();
+        requestPeerSessionMarkers(current, effectiveClients);
         publish();
     }
 
@@ -863,7 +885,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             sessions.join(config.serverId(), channelId, view.getId(), clock.instant(),
                     sync, gatewayEventId("join", event.getMap()), 0L);
         }
-        if (!localClient && channelId >= 0) {
+        if (!localClient && channelId >= 0 && !sync) {
             queuePeerSessionMarker(socket, view.getId(), channelId);
         }
         applyPendingSessionMarkers();
@@ -904,7 +926,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             sessions.move(config.serverId(), from, target, clientId, clock.instant(),
                     sync, gatewayEventId("move", event.getMap()), 0L);
         }
-        if (!localClient && target >= 0) {
+        if (!localClient && target >= 0 && !sync) {
             queuePeerSessionMarker(socket, clientId, target);
         }
         applyPendingSessionMarkers();

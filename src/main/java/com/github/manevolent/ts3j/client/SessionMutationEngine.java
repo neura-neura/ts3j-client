@@ -172,14 +172,24 @@ final class SessionMutationEngine {
                 state.sessions.put(key, new VoiceRoomSession(
                         key.getServerId(), key.getChannelId(),
                         soleLocalClient ? delta.getObservedAt() : null,
-                        soleLocalClient, users, state.revision + 1));
+                        soleLocalClient, users, state.revision + 1, soleLocalClient));
             } else if (delta.getBootstrapClientId() >= 0
                     && users.size() == 1
                     && users.contains(delta.getBootstrapClientId())) {
                 // A stale known or unknown record can survive an application
                 // restart. The old client was disconnected before this fresh
                 // local client joined, so a sole local snapshot starts anew.
-                state.sessions.put(key, current.withStart(delta.getObservedAt(), true,
+                state.sessions.put(key, current.withStart(delta.getObservedAt(), true, true,
+                        users, state.revision + 1));
+            } else if (delta.getBootstrapClientId() >= 0) {
+                // This is the first authoritative snapshot after this client
+                // connected, and another client is already present. A start
+                // loaded from this machine may belong to an older occupancy
+                // of the channel; carrying it forward would make a newly
+                // connected client resurrect an arbitrary historical timer.
+                // Keep the occupancy, but wait for a trusted peer marker from
+                // the client that was already in the channel.
+                state.sessions.put(key, current.withStart(null, false, false,
                         users, state.revision + 1));
             } else {
                 state.sessions.put(key, current.withUsers(users, state.revision + 1));
@@ -192,6 +202,13 @@ final class SessionMutationEngine {
         VoiceRoomSession current = state.sessions.get(key);
         if (current == null || !current.isOccupied()) return;
         Instant existing = current.getVoiceSessionStart();
+        if (current.isLocallyBootstrapped() && current.isStartKnown()
+                && existing != null && start.isBefore(existing)) {
+            // This connection already observed a real empty-to-occupied
+            // transition. A peer's older persisted marker belongs to a prior
+            // occupancy and must not replace that fresh start.
+            return;
+        }
         // Several app instances may announce the same transition at nearly
         // the same time. The earliest trusted marker is deterministic and
         // avoids shortening a session because messages arrived out of order.

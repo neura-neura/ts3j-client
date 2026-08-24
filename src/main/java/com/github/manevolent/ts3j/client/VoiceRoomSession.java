@@ -20,6 +20,8 @@ public final class VoiceRoomSession {
     private final int channelId;
     private final Instant voiceSessionStart;
     private final boolean startKnown;
+    /** True only for a fresh zero-to-one observation made by this connection. */
+    private final boolean locallyBootstrapped;
     private final Set<Integer> presentUsers;
     private final long revision;
 
@@ -32,10 +34,18 @@ public final class VoiceRoomSession {
     public VoiceRoomSession(String serverId, int channelId, Instant voiceSessionStart,
                             boolean startKnown, Collection<Integer> presentUsers,
                             long revision) {
+        this(serverId, channelId, voiceSessionStart, startKnown, presentUsers,
+                revision, false);
+    }
+
+    VoiceRoomSession(String serverId, int channelId, Instant voiceSessionStart,
+                     boolean startKnown, Collection<Integer> presentUsers,
+                     long revision, boolean locallyBootstrapped) {
         this.serverId = serverId;
         this.channelId = channelId;
         this.voiceSessionStart = voiceSessionStart;
         this.startKnown = startKnown && voiceSessionStart != null;
+        this.locallyBootstrapped = locallyBootstrapped && this.startKnown;
         this.presentUsers = Collections.unmodifiableSet(
                 new LinkedHashSet<>(presentUsers == null
                         ? Collections.<Integer>emptySet() : presentUsers));
@@ -57,6 +67,14 @@ public final class VoiceRoomSession {
 
     public boolean isStartKnown() {
         return startKnown;
+    }
+
+    /**
+     * Returns true when this connection observed the channel with only its
+     * local client and established the fresh session start.
+     */
+    boolean isLocallyBootstrapped() {
+        return locallyBootstrapped;
     }
 
     public Set<Integer> getPresentUsers() {
@@ -87,12 +105,19 @@ public final class VoiceRoomSession {
 
     VoiceRoomSession withUsers(Collection<Integer> users, long nextRevision) {
         return new VoiceRoomSession(serverId, channelId, voiceSessionStart,
-                startKnown, users, nextRevision);
+                startKnown, users, nextRevision, locallyBootstrapped);
     }
 
     VoiceRoomSession withStart(Instant start, boolean known, Collection<Integer> users,
                                long nextRevision) {
-        return new VoiceRoomSession(serverId, channelId, start, known, users, nextRevision);
+        return new VoiceRoomSession(serverId, channelId, start, known, users,
+                nextRevision, locallyBootstrapped);
+    }
+
+    VoiceRoomSession withStart(Instant start, boolean known, boolean locallyBootstrapped,
+                               Collection<Integer> users, long nextRevision) {
+        return new VoiceRoomSession(serverId, channelId, start, known, users,
+                nextRevision, locallyBootstrapped);
     }
 
     @Override

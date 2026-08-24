@@ -5,6 +5,7 @@ import javafx.stage.Stage;
 
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.EventQueue;
 import java.awt.Graphics2D;
 import java.awt.MenuItem;
 import java.awt.PopupMenu;
@@ -111,14 +112,31 @@ final class DesktopTray implements AutoCloseable {
         TrayIcon icon = trayIcon;
         trayIcon = null;
         if (icon != null) {
-            try {
-                SystemTray.getSystemTray().remove(icon);
-            } catch (Exception ignored) { }
+            if (isMacOs()) {
+                // Removing an AWT tray icon synchronously from the JavaFX
+                // application thread can deadlock inside macOS window disposal.
+                // Hand it back to AWT; the explicit quit path then terminates
+                // after the remaining app-owned resources have been closed.
+                EventQueue.invokeLater(() -> removeTrayIcon(icon));
+            } else {
+                removeTrayIcon(icon);
+            }
         }
         stage = null;
         exitAction = null;
         openItem = null;
         quitItem = null;
+    }
+
+    private static void removeTrayIcon(TrayIcon icon) {
+        try {
+            SystemTray.getSystemTray().remove(icon);
+        } catch (Exception ignored) { }
+    }
+
+    private static boolean isMacOs() {
+        return System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("mac");
     }
 
     private static BufferedImage createImage(MicState state) {

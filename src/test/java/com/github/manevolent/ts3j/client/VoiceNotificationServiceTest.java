@@ -3,10 +3,53 @@ package com.github.manevolent.ts3j.client;
 import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+import java.util.Locale;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class VoiceNotificationServiceTest {
+    @Test
+    public void macSpeechUsesSayArgumentsWithoutAShell() {
+        Path output = Paths.get("/tmp/ts3j voice.aiff");
+        String message = "Usuario; $(touch no-se-ejecuta) entró al canal";
+
+        List<String> command = VoiceNotificationService.macSayCommand(
+                message, new Locale("es", "MX"), output);
+
+        assertEquals("/usr/bin/say", command.get(0));
+        assertEquals("-v", command.get(1));
+        assertEquals("Paulina", command.get(2));
+        assertEquals("-o", command.get(3));
+        assertEquals(output.toAbsolutePath().toString(), command.get(4));
+        assertEquals(message, command.get(5));
+        assertFalse(command.contains("/bin/sh"));
+        assertFalse(command.contains("/bin/zsh"));
+    }
+
+    @Test
+    public void macSpeechUsesLocalizedVoicesAndAppliesBoundedPlaybackVolume() {
+        assertEquals("Samantha", VoiceNotificationService.preferredMacVoice(Locale.US));
+        assertEquals("Paulina", VoiceNotificationService.preferredMacVoice(
+                new Locale("es", "MX")));
+        assertEquals("Tingting", VoiceNotificationService.preferredMacVoice(
+                Locale.SIMPLIFIED_CHINESE));
+
+        Path audio = Paths.get("/tmp/speech.aiff");
+        List<String> quieter = VoiceNotificationService.macPlaybackCommand(audio, 35);
+        assertEquals("/usr/bin/afplay", quieter.get(0));
+        assertEquals("-v", quieter.get(1));
+        assertEquals("0.35", quieter.get(2));
+        assertEquals(audio.toAbsolutePath().toString(), quieter.get(3));
+        assertEquals("1.0", VoiceNotificationService.macPlaybackCommand(audio, 150).get(2));
+        assertEquals("0.0", VoiceNotificationService.macPlaybackCommand(audio, -1).get(2));
+        assertTrue(quieter.size() == 4);
+    }
+
     @Test
     public void messagesFollowTheSelectedLanguage() {
         TeamSpeakActivity activity = new TeamSpeakActivity(

@@ -5,11 +5,31 @@ import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
 public class OfficialIdentityImporterTest {
+    @Test
+    public void defaultPathUsesTheOfficialMacSettingsDirectory() {
+        assertEquals(Paths.get("/Users/tester", "Library", "Application Support",
+                        "TeamSpeak 3", "settings.db"),
+                OfficialIdentityImporter.defaultSettingsPath(
+                        "Mac OS X", "/ignored/AppData", "/Users/tester"));
+    }
+
+    @Test
+    public void defaultWindowsPathsRemainUnchanged() {
+        assertEquals(Paths.get("/Users/tester/AppData/Roaming", "TS3Client", "settings.db"),
+                OfficialIdentityImporter.defaultSettingsPath(
+                        "Windows 11", "/Users/tester/AppData/Roaming", "/Users/tester"));
+        assertEquals(Paths.get("/Users/tester", "AppData", "Roaming", "TS3Client",
+                        "settings.db"),
+                OfficialIdentityImporter.defaultSettingsPath(
+                        "Windows 11", "  ", "/Users/tester"));
+    }
+
     @Test
     public void readsIdentityExportFromOfficialRecord() throws Exception {
         LocalIdentity expected = LocalIdentity.generateNew(8);

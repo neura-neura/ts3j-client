@@ -12,6 +12,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -27,12 +28,27 @@ final class OfficialIdentityImporter {
     private OfficialIdentityImporter() { }
 
     static Optional<LocalIdentity> tryLoadDefault() {
-        String appData = System.getenv("APPDATA");
-        Path settingsPath = appData == null || appData.trim().isEmpty()
-                ? Paths.get(System.getProperty("user.home"), "AppData", "Roaming",
-                "TS3Client", "settings.db")
+        return tryLoad(defaultSettingsPath(System.getProperty("os.name", ""),
+                System.getenv("APPDATA"), System.getProperty("user.home")));
+    }
+
+    static Path defaultSettingsPath(String osName, String appData, String userHome) {
+        String normalizedOs = osName == null ? "" : osName.toLowerCase(Locale.ROOT);
+        if (normalizedOs.contains("mac")) {
+            return macSettingsPath(userHome);
+        }
+        return windowsSettingsPath(appData, userHome);
+    }
+
+    static Path windowsSettingsPath(String appData, String userHome) {
+        return appData == null || appData.trim().isEmpty()
+                ? Paths.get(userHome, "AppData", "Roaming", "TS3Client", "settings.db")
                 : Paths.get(appData, "TS3Client", "settings.db");
-        return tryLoad(settingsPath);
+    }
+
+    static Path macSettingsPath(String userHome) {
+        return Paths.get(userHome, "Library", "Application Support", "TeamSpeak 3",
+                "settings.db");
     }
 
     static Optional<LocalIdentity> tryLoad(Path settingsPath) {

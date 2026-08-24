@@ -1,5 +1,5 @@
 param(
-    [string] $Version = '1.0.5',
+    [string] $Version = '1.0.6',
     [string] $Maven = 'mvn.cmd',
     [string] $Jpackage = 'jpackage.exe',
     [string] $InnoSetup = (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')

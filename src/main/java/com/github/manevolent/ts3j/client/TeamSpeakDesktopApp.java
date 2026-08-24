@@ -65,6 +65,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Compact, keyboard-friendly JavaFX client shell around the ts3j gateway. */
 public final class TeamSpeakDesktopApp extends Application {
@@ -104,7 +106,7 @@ public final class TeamSpeakDesktopApp extends Application {
     private AudioDeviceService audioDeviceService;
     private VoiceNotificationService voiceNotificationService;
     private AppPreferences appPreferences;
-    private WindowsStartupManager startupManager;
+    private StartupManager startupManager;
     private ClientVolumeStore clientVolumeStore;
     private boolean trayInstalled;
     private boolean forceExit;
@@ -126,6 +128,7 @@ public final class TeamSpeakDesktopApp extends Application {
     private Label audioCaptureLevelControl;
     private Label audioPlaybackLevelControl;
     private final UpdateService updateService = new UpdateService();
+    private final AtomicBoolean shutdownStarted = new AtomicBoolean();
     private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "ts3j-client-updates");
         thread.setDaemon(true);
@@ -150,7 +153,7 @@ public final class TeamSpeakDesktopApp extends Application {
             return;
         }
         appPreferences = new AppPreferences();
-        startupManager = new WindowsStartupManager();
+        startupManager = new StartupManager();
         clientVolumeStore = new ClientVolumeStore();
         language = appPreferences.language();
         lightTheme = appPreferences.isLightTheme();
@@ -1335,19 +1338,21 @@ public final class TeamSpeakDesktopApp extends Application {
         ButtonType accept = new ButtonType(t("dialog.ok"), ButtonBar.ButtonData.OK_DONE);
         pane.getButtonTypes().add(accept);
 
-        CheckBox startWithWindows = new CheckBox(t("settings.startup"));
+        String startupSuffix = isMacOs() ? ".macos" : "";
+        CheckBox startWithWindows = new CheckBox(t("settings.startup" + startupSuffix));
         startWithWindows.setSelected(appPreferences.startsWithWindows() || startupManager.isEnabled());
         startWithWindows.setDisable(!startupManager.isSupported());
-        startWithWindows.setAccessibleText(t("settings.startup.accessible"));
-        CheckBox closeToTray = new CheckBox(t("settings.close.tray"));
+        startWithWindows.setAccessibleText(t("settings.startup.accessible" + startupSuffix));
+        CheckBox closeToTray = new CheckBox(t("settings.close.tray" + startupSuffix));
         closeToTray.setSelected(appPreferences.closesToTray());
-        closeToTray.setAccessibleText(t("settings.close.tray.accessible"));
+        closeToTray.setAccessibleText(t("settings.close.tray.accessible" + startupSuffix));
 
-        Label startHelp = new Label(t("settings.startup.help"));
+        Label startHelp = new Label(t("settings.startup.help" + startupSuffix));
         startHelp.getStyleClass().add("muted-text");
         constrainSettingsHelp(startHelp);
         Label trayHelp = new Label(trayInstalled
-                ? t("settings.tray.available") : t("settings.tray.unavailable"));
+                ? t("settings.tray.available" + startupSuffix)
+                : t("settings.tray.unavailable" + startupSuffix));
         trayHelp.getStyleClass().add("muted-text");
         constrainSettingsHelp(trayHelp);
 
@@ -1364,7 +1369,8 @@ public final class TeamSpeakDesktopApp extends Application {
         CheckBox voiceNotifications = new CheckBox(t("settings.voice.notifications"));
         voiceNotifications.setSelected(appPreferences.voiceNotifications());
         voiceNotifications.setAccessibleText(t("settings.voice.notifications"));
-        Label voiceHelp = new Label(t("settings.voice.help"));
+        Label voiceHelp = new Label(t(isMacOs()
+                ? "settings.voice.help.macos" : "settings.voice.help"));
         voiceHelp.getStyleClass().add("muted-text");
         constrainSettingsHelp(voiceHelp);
 
@@ -1633,6 +1639,7 @@ public final class TeamSpeakDesktopApp extends Application {
                     status.setText(t("settings.update.downloading", latest.getVersion(),
                             (int) Math.round(fraction * 100.0D)));
                 }));
+                updateService.verifyInstaller(installer);
                 Platform.runLater(() -> launchDownloadedUpdate(installer, button, progress, status));
             } catch (Exception error) {
                 Platform.runLater(() -> {
@@ -1651,9 +1658,23 @@ public final class TeamSpeakDesktopApp extends Application {
     private void launchDownloadedUpdate(Path installer, Button button,
                                         ProgressBar progress, Label status) {
         try {
-            new ProcessBuilder(installer.toAbsolutePath().toString()).start();
+            Process process = new ProcessBuilder(UpdateService.launchCommand(installer))
+                    .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                    .redirectError(ProcessBuilder.Redirect.INHERIT)
+                    .start();
+            if (isMacOs()) {
+                if (!process.waitFor(10L, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("macOS did not open the installer in time.");
+                }
+                if (process.exitValue() != 0) {
+                    throw new IOException("macOS could not open the downloaded installer (exit "
+                            + process.exitValue() + ").");
+                }
+            }
             status.getStyleClass().remove("error-line");
-            status.setText(t("settings.update.ready"));
+            status.setText(t(isMacOs()
+                    ? "settings.update.ready.macos" : "settings.update.ready"));
             button.setDisable(true);
             progress.setProgress(1.0D);
             exitApplication();
@@ -1680,7 +1701,8 @@ public final class TeamSpeakDesktopApp extends Application {
                 throw new IllegalStateException(t("info.startup.error"));
             }
             if (startWithWindows != previousStart || startWithWindows != startupManager.isEnabled()) {
-                startupManager.setEnabled(startWithWindows, applicationExecutable());
+                startupManager.setEnabled(startWithWindows,
+                        startWithWindows ? applicationExecutable() : null);
             }
             appPreferences.setStartsWithWindows(startWithWindows);
             appPreferences.setClosesToTray(closeToTray);
@@ -1720,33 +1742,52 @@ public final class TeamSpeakDesktopApp extends Application {
 
     private Path applicationExecutable() {
         List<Path> candidates = new ArrayList<>();
+        String packagedLauncher = System.getProperty("jpackage.app-path", "").trim();
+        if (!packagedLauncher.isEmpty()) candidates.add(Paths.get(packagedLauncher));
+        String launcherName = isMacOs() ? "ts3j-client" : "ts3j-client.exe";
         String workingDirectory = System.getProperty("user.dir", "");
         if (!workingDirectory.isEmpty()) {
-            candidates.add(Paths.get(workingDirectory, "ts3j-client.exe"));
+            candidates.add(Paths.get(workingDirectory, launcherName));
         }
         try {
             Path location = Paths.get(TeamSpeakDesktopApp.class.getProtectionDomain()
                     .getCodeSource().getLocation().toURI()).toAbsolutePath();
-            if (java.nio.file.Files.isDirectory(location)) {
-                candidates.add(location.resolve("ts3j-client.exe"));
+            if (isMacOs()) {
+                Path cursor = java.nio.file.Files.isDirectory(location)
+                        ? location : location.getParent();
+                for (int depth = 0; cursor != null && depth < 8; depth++, cursor = cursor.getParent()) {
+                    Path name = cursor.getFileName();
+                    if (name != null && name.toString().toLowerCase(Locale.ROOT).endsWith(".app")) {
+                        candidates.add(cursor.resolve("Contents").resolve("MacOS").resolve(launcherName));
+                        break;
+                    }
+                }
+            } else if (java.nio.file.Files.isDirectory(location)) {
+                candidates.add(location.resolve(launcherName));
                 if (location.getParent() != null) {
-                    candidates.add(location.getParent().resolve("ts3j-client.exe"));
+                    candidates.add(location.getParent().resolve(launcherName));
                 }
             } else if (location.getParent() != null) {
-                candidates.add(location.getParent().resolve("ts3j-client.exe"));
+                candidates.add(location.getParent().resolve(launcherName));
                 if (location.getParent().getParent() != null) {
-                    candidates.add(location.getParent().getParent().resolve("ts3j-client.exe"));
+                    candidates.add(location.getParent().getParent().resolve(launcherName));
                 }
             }
         } catch (Exception ignored) {
             // Development launchers may not expose a file-backed code source.
         }
         for (Path candidate : candidates) {
-            if (candidate != null && java.nio.file.Files.isRegularFile(candidate)) {
+            if (candidate != null && (isMacOs()
+                    ? MacStartupManager.isSuitableLauncher(candidate)
+                    : java.nio.file.Files.isRegularFile(candidate))) {
                 return candidate.toAbsolutePath().normalize();
             }
         }
-        throw new IllegalStateException("Esta opción requiere ejecutar la versión instalada de ts3j-client.");
+        throw new IllegalStateException(t("info.installed.required"));
+    }
+
+    private static boolean isMacOs() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     }
 
     private void restoreFromTray() {
@@ -1774,6 +1815,11 @@ public final class TeamSpeakDesktopApp extends Application {
         Platform.setImplicitExit(true);
         if (stage != null) stage.close();
         Platform.exit();
+        // AWT's native tray integration can keep the packaged process alive on
+        // macOS even after JavaFX accepts Platform.exit(). Perform the same
+        // orderly cleanup as stop() and then terminate the explicit quit path.
+        shutdownResources();
+        System.exit(0);
     }
 
     private void showInfo(String title, String message) {
@@ -1811,6 +1857,12 @@ public final class TeamSpeakDesktopApp extends Application {
 
     @Override
     public void stop() {
+        shutdownResources();
+        System.exit(0);
+    }
+
+    private void shutdownResources() {
+        if (!shutdownStarted.compareAndSet(false, true)) return;
         if (timerTimeline != null) timerTimeline.stop();
         updateExecutor.shutdownNow();
         if (gateway != null) gateway.close();
