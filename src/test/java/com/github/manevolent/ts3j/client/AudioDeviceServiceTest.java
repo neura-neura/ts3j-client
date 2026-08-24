@@ -58,6 +58,20 @@ public class AudioDeviceServiceTest {
     }
 
     @Test
+    public void resamplerPreservesFrameEndpointsForContinuousAudio() {
+        byte[] first = rampPcm(882, 0);
+        byte[] second = rampPcm(882, 882);
+        byte[] firstResampled = AudioDeviceService.resamplePcm(first, 44100.0F, 48000.0F);
+        byte[] secondResampled = AudioDeviceService.resamplePcm(second, 44100.0F, 48000.0F);
+        int firstEnd = (short) ((firstResampled[firstResampled.length - 2] & 0xff)
+                | (firstResampled[firstResampled.length - 1] << 8));
+        int secondStart = (short) ((secondResampled[0] & 0xff)
+                | (secondResampled[1] << 8));
+        assertEquals(881, firstEnd);
+        assertEquals(882, secondStart);
+    }
+
+    @Test
     public void playbackMixerCombinesSourcesWithSaturation() {
         byte[] first = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
         byte[] second = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
@@ -94,5 +108,15 @@ public class AudioDeviceServiceTest {
                 | (smoothed[AudioDeviceService.VOICE_FRAME_BYTES - 1] << 8));
         assertTrue(first > Short.MIN_VALUE && first < -30000);
         assertEquals(Short.MAX_VALUE, later);
+    }
+
+    private static byte[] rampPcm(int samples, int start) {
+        byte[] pcm = new byte[samples * 2];
+        for (int i = 0; i < samples; i++) {
+            short value = (short) (start + i);
+            pcm[i * 2] = (byte) (value & 0xff);
+            pcm[i * 2 + 1] = (byte) ((value >>> 8) & 0xff);
+        }
+        return pcm;
     }
 }

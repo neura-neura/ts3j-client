@@ -46,4 +46,27 @@ public class TeamSpeakAudioBridgeTest {
         assertEquals(0xcd, roundTrip[2] & 0xff);
         assertEquals(0xab, roundTrip[3] & 0xff);
     }
+
+    @Test
+    public void opusDecoderCanConcealARecoverableLostVoiceFrame() throws Exception {
+        OpusEncoder encoder = new OpusEncoder(48000, 1, OpusApplication.OPUS_APPLICATION_VOIP);
+        encoder.setSignalType(OpusSignal.OPUS_SIGNAL_VOICE);
+        short[] input = new short[AudioDeviceService.VOICE_FRAME_SAMPLES];
+        for (int i = 0; i < input.length; i++) {
+            input[i] = (short) (Math.sin(i * 0.06D) * 9000.0D);
+        }
+        byte[] first = new byte[4000];
+        byte[] second = new byte[4000];
+        int firstLength = encoder.encode(input, 0, input.length, first, 0, first.length);
+        int secondLength = encoder.encode(input, 0, input.length, second, 0, second.length);
+
+        OpusDecoder decoder = new OpusDecoder(48000, 1);
+        short[] decoded = new short[AudioDeviceService.VOICE_FRAME_SAMPLES];
+        assertEquals(AudioDeviceService.VOICE_FRAME_SAMPLES,
+                decoder.decode(first, 0, firstLength, decoded, 0, decoded.length, false));
+        assertEquals(AudioDeviceService.VOICE_FRAME_SAMPLES,
+                decoder.decode(null, 0, 0, decoded, 0, decoded.length, false));
+        assertEquals(AudioDeviceService.VOICE_FRAME_SAMPLES,
+                decoder.decode(second, 0, secondLength, decoded, 0, decoded.length, false));
+    }
 }

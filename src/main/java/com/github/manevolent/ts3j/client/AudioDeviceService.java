@@ -453,7 +453,13 @@ final class AudioDeviceService implements AutoCloseable {
         int outputSamples = Math.max(1, Math.round(inputSamples * toRate / fromRate));
         byte[] output = new byte[outputSamples * 2];
         for (int i = 0; i < outputSamples; i++) {
-            double source = i * fromRate / toRate;
+            // Each frame is resampled independently because Java Sound may
+            // expose a 44.1 kHz device while TeamSpeak is fixed at 48 kHz.
+            // Map both endpoints explicitly so the last source sample is not
+            // skipped at every 20 ms boundary (the old ratio-only mapping
+            // accumulated a fractional discontinuity and produced hiss/clicks).
+            double source = outputSamples <= 1 ? 0.0D
+                    : i * (inputSamples - 1.0D) / (outputSamples - 1.0D);
             int lower = Math.min(inputSamples - 1, (int) Math.floor(source));
             int upper = Math.min(inputSamples - 1, lower + 1);
             double fraction = source - lower;
