@@ -81,6 +81,10 @@ final class AudioDeviceService implements AutoCloseable {
         captureFrames.clear();
     }
 
+    void clearPlaybackFrames() {
+        playbackFrames.clear();
+    }
+
     void enqueuePlaybackFrame(byte[] pcm) {
         if (pcm == null || pcm.length == 0 || !running) return;
         byte[] copy = Arrays.copyOf(pcm, pcm.length);
@@ -103,6 +107,7 @@ final class AudioDeviceService implements AutoCloseable {
 
     void setCaptureDeviceId(String id) {
         captureDeviceId = normalize(id);
+        clearCaptureFrames();
         if (running) restartCapture();
     }
 

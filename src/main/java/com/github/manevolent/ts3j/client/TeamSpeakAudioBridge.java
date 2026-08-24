@@ -63,6 +63,7 @@ final class TeamSpeakAudioBridge implements Microphone, AutoCloseable {
     void setOutputMuted(boolean muted) {
         outputMuted = muted;
         if (muted) {
+            devices.clearPlaybackFrames();
             synchronized (decoders) {
                 decoders.clear();
             }
@@ -106,7 +107,13 @@ final class TeamSpeakAudioBridge implements Microphone, AutoCloseable {
     void handleVoicePacket(PacketBody0Voice packet) {
         if (outputMuted || packet == null || !isOpusCodec(packet.getCodecType())) return;
         byte[] data = packet.getCodecData();
-        if (data == null || data.length == 0) return;
+        if (data == null || data.length == 0) {
+            synchronized (decoders) {
+                OpusDecoder decoder = decoders.get(packet.getClientId());
+                if (decoder != null) decoder.resetState();
+            }
+            return;
+        }
         final OpusDecoder decoder;
         synchronized (decoders) {
             OpusDecoder existing = decoders.get(packet.getClientId());
