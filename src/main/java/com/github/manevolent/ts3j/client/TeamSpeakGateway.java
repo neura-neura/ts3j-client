@@ -47,6 +47,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
@@ -81,6 +82,12 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
+    private final ScheduledExecutorService sessionMarkerRetryExecutor =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread thread = new Thread(r, "ts3j-client-session-marker-retry");
+                thread.setDaemon(true);
+                return thread;
+            });
     private final List<Consumer<GatewaySnapshot>> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<TeamSpeakActivity>> activityListeners = new CopyOnWriteArrayList<>();
     private final Map<Integer, ChannelView> channels = new HashMap<>();
@@ -93,6 +100,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private final Map<SessionKey, Set<Integer>> pendingSessionMarkerRequests = new HashMap<>();
     private final Set<SessionKey> pendingSessionChannelRequests = new HashSet<>();
     private final Map<String, Instant> recentSessionMarkerSends = new HashMap<>();
+    private final Map<String, Instant> recentSessionMarkerPeerRequests = new HashMap<>();
 
     private volatile LocalTeamspeakClientSocket socket;
     private volatile AudioDeviceService audioDeviceService;
@@ -189,6 +197,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         pendingSessionMarkerRequests.clear();
         pendingSessionChannelRequests.clear();
         recentSessionMarkerSends.clear();
+        recentSessionMarkerPeerRequests.clear();
         initialSync = true;
         sessionStateReady = false;
         channelMessages.clear();
@@ -270,6 +279,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                             pendingSessionMarkerRequests.clear();
                             pendingSessionChannelRequests.clear();
                             recentSessionMarkerSends.clear();
+                            recentSessionMarkerPeerRequests.clear();
                             if (audioBridge != null) audioBridge.close();
                             audioBridge = null;
                             initialSync = false;
@@ -540,34 +550,43 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
 
         int senderId = event.getInvokerId();
         boolean channelTarget = event.getTargetMode() == TextMessageTargetMode.CHANNEL;
-        // A channel-targeted TeamSpeak message is routed by the server to the
-        // occupants of that channel.  Do not compare it with our cached
-        // client map: after a leave/rejoin that map can briefly contain the
-        // client's previous channel and would discard a valid marker.
-        if (!channelTarget) {
-            synchronized (this) {
-                ClientView sender = clients.get(senderId);
-                if (sender != null && sender.getChannelId() != marker.channelId) return true;
-            }
-        }
+        // Do not reject a marker merely because the cached client map says the
+        // sender was in another channel. During a disconnect/rejoin that map
+        // can be one event behind. We still distinguish whether the sender is
+        // proven present so a private, delayed marker cannot resurrect a peer
+        // after the channel became empty.
         if (channelTarget
                 && event.getTargetChannelId() >= 0
                 && event.getTargetChannelId() != marker.channelId) return true;
-        if (channelTarget && senderId >= 0) {
-            VoiceRoomSession occupied = sessions.snapshot().get(
-                    new SessionKey(marker.serverId, marker.channelId));
-            // A channel-targeted marker proves the sender is currently in the
-            // channel. Record that hidden peer before adopting an older start;
-            // otherwise a restricted client would keep protecting its own
-            // local bootstrap and never converge to the existing session.
-            if (occupied != null && occupied.isOccupied()) {
+        VoiceRoomSession occupied = sessions.snapshot().get(
+                new SessionKey(marker.serverId, marker.channelId));
+        boolean peerProvenPresent = channelTarget;
+        if (senderId >= 0) {
+            synchronized (this) {
+                ClientView sender = clients.get(senderId);
+                peerProvenPresent = peerProvenPresent
+                        || (sender != null && sender.getChannelId() == marker.channelId);
+            }
+            peerProvenPresent = peerProvenPresent
+                    || (occupied != null && occupied.containsUser(senderId))
+                    || hasRecentSessionMarkerPeerRequest(marker.serverId, marker.channelId, senderId);
+            // Both channel broadcasts and private responses prove that an app
+            // instance is present. Record that hidden peer before adopting an
+            // older start; otherwise a restricted client can keep protecting
+            // its fresh local bootstrap and never converge to the existing
+            // session. This also covers a private marker arriving before its
+            // matching request after a reconnect.
+            if (peerProvenPresent && occupied != null && occupied.isOccupied()) {
                 rememberSessionMarkerPeer(marker.serverId, marker.channelId, senderId);
             }
+        }
+        if (senderId >= 0 && peerProvenPresent) {
+            forgetRecentSessionMarkerPeerRequest(marker.serverId, marker.channelId, senderId);
         }
         String eventId = "session-marker:" + senderId + ":" + marker.channelId
                 + ":" + marker.start;
         adoptOrQueueSessionStart(marker.serverId, marker.channelId, marker.start, eventId,
-                senderId);
+                peerProvenPresent ? senderId : -1);
         publish();
         return true;
     }
@@ -850,6 +869,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         try {
             if (socket != expectedSocket || initialSync || !sessionStateReady) return;
             if (!rememberSessionMarkerSend("request:" + peerId + ":" + channelId)) return;
+            rememberRecentSessionMarkerPeerRequest(configuredServerId(), channelId, peerId);
             expectedSocket.sendPrivateMessage(peerId, sessionMarkerRequest(channelId));
         } catch (Throwable ignored) {
             // The optional request is best effort and must not break event
@@ -868,19 +888,55 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         ioExecutor.submit(new Runnable() {
             @Override
             public void run() {
-                try {
-                    if (socket != expectedSocket || initialSync || !sessionStateReady) return;
-                    // This request is deliberately emitted for every join or
-                    // rejoin event. Suppressing it for a few seconds would
-                    // lose the only response when the client left the channel
-                    // before the previous broadcast arrived.
-                    expectedSocket.sendChannelMessage(channelId,
-                            sessionChannelMarkerRequest(channelId));
-                } catch (Throwable ignored) {
-                    // The shared marker is best effort; normal chat remains unaffected.
-                }
+                sendChannelSessionMarkerRequest(expectedSocket, channelId);
             }
         });
+    }
+
+    /**
+     * Retries a local rejoin handshake without blocking the protocol executor.
+     * A marker can race the initial snapshot or be lost together with a UDP
+     * notification; two short retries cover that window while stopping once a
+     * known shared start has been adopted.
+     */
+    private void scheduleChannelSessionMarkerRetries(final LocalTeamspeakClientSocket expectedSocket,
+                                                     final int channelId) {
+        if (expectedSocket == null || channelId < 0 || closed) return;
+        long[] delays = {400L, 1400L};
+        for (long delay : delays) {
+            try {
+                sessionMarkerRetryExecutor.schedule(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (closed || !needsSessionMarkerRetry(channelId)) return;
+                        ioExecutor.submit(() -> sendChannelSessionMarkerRequest(expectedSocket,
+                                channelId));
+                    }
+                }, delay, TimeUnit.MILLISECONDS);
+            } catch (RuntimeException ignored) {
+                // Closing the gateway races only with optional retry tasks.
+            }
+        }
+    }
+
+    private boolean needsSessionMarkerRetry(int channelId) {
+        VoiceRoomSession session = sessions.snapshot().get(
+                new SessionKey(configuredServerId(), channelId));
+        if (session == null || !session.isOccupied() || !session.isStartKnown()) return true;
+        return permissionsLimited && session.getPresentUsers().size() <= 1;
+    }
+
+    private void sendChannelSessionMarkerRequest(LocalTeamspeakClientSocket expectedSocket,
+                                                 int channelId) {
+        try {
+            if (socket != expectedSocket || closed || initialSync || !sessionStateReady) return;
+            // This request is deliberately emitted for every join or rejoin
+            // event. Suppressing the first request would lose the only
+            // response when the peer leaves immediately afterward.
+            expectedSocket.sendChannelMessage(channelId, sessionChannelMarkerRequest(channelId));
+        } catch (Throwable ignored) {
+            // The shared marker is best effort; normal chat remains unaffected.
+        }
     }
 
     private void requestPeerSessionMarkers(LocalTeamspeakClientSocket expectedSocket,
@@ -935,6 +991,43 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             if (recentSessionMarkerSends.size() > 512) recentSessionMarkerSends.clear();
             return true;
         }
+    }
+
+    private void rememberRecentSessionMarkerPeerRequest(String serverId, int channelId,
+                                                        int peerId) {
+        if (serverId == null || serverId.isEmpty() || channelId < 0 || peerId < 0) return;
+        synchronized (this) {
+            recentSessionMarkerPeerRequests.put(sessionMarkerPeerKey(serverId, channelId, peerId),
+                    clock.instant());
+            if (recentSessionMarkerPeerRequests.size() > 256) {
+                recentSessionMarkerPeerRequests.clear();
+            }
+        }
+    }
+
+    private boolean hasRecentSessionMarkerPeerRequest(String serverId, int channelId,
+                                                      int peerId) {
+        String key = sessionMarkerPeerKey(serverId, channelId, peerId);
+        synchronized (this) {
+            Instant requestedAt = recentSessionMarkerPeerRequests.get(key);
+            if (requestedAt == null) return false;
+            if (clock.instant().minusSeconds(15L).isAfter(requestedAt)) {
+                recentSessionMarkerPeerRequests.remove(key);
+                return false;
+            }
+            return true;
+        }
+    }
+
+    private void forgetRecentSessionMarkerPeerRequest(String serverId, int channelId,
+                                                      int peerId) {
+        synchronized (this) {
+            recentSessionMarkerPeerRequests.remove(sessionMarkerPeerKey(serverId, channelId, peerId));
+        }
+    }
+
+    private static String sessionMarkerPeerKey(String serverId, int channelId, int peerId) {
+        return serverId + "\u0000" + channelId + "\u0000" + peerId;
     }
 
     private String sessionMarker(int channelId) {
@@ -1144,6 +1237,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         requestPeerSessionMarkers(current, effectiveClients);
         if (currentChannelId >= 0) {
             queueChannelSessionMarkerRequest(current, currentChannelId);
+            scheduleChannelSessionMarkerRetries(current, currentChannelId);
             respondToChannelSessionMarkerRequest(currentChannelId);
         }
         publish();
@@ -1250,6 +1344,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         respondToPendingSessionMarkerRequests();
         if (!sync && channelId >= 0) {
             queueChannelSessionMarkerRequest(socket, channelId);
+            if (localClient) scheduleChannelSessionMarkerRetries(socket, channelId);
             // If this instance already knows the session start, answer the
             // fresh join immediately as well as requesting it. This removes a
             // race where the rejoining client leaves before the request's
@@ -1300,6 +1395,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         respondToPendingSessionMarkerRequests();
         if (!sync && target >= 0) {
             queueChannelSessionMarkerRequest(socket, target);
+            if (localClient) scheduleChannelSessionMarkerRetries(socket, target);
             respondToChannelSessionMarkerRequest(target);
         }
         if (!sync && !localClient && previousCurrentChannel >= 0) {
@@ -1419,6 +1515,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             pendingSessionMarkers.clear();
             pendingSessionMarkerRequests.clear();
             recentSessionMarkerSends.clear();
+            recentSessionMarkerPeerRequests.clear();
             if (audioBridge != null) audioBridge.close();
             audioBridge = null;
             initialSync = false;
@@ -1704,6 +1801,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     public void close() {
         closed = true;
         disconnect();
+        sessionMarkerRetryExecutor.shutdownNow();
         ioExecutor.shutdownNow();
         try {
             ioExecutor.awaitTermination(2, TimeUnit.SECONDS);

@@ -30,7 +30,7 @@ if (( $# > 1 )); then
     exit 2
 fi
 
-readonly VERSION="${1:-${APP_VERSION:-1.0.10}}"
+readonly VERSION="${1:-${APP_VERSION:-1.0.11}}"
 readonly DMG_FILE="$DIST_DIR/${APP_NAME}-${VERSION}-macos-${ARCHITECTURE}.dmg"
 readonly SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:-${DEVELOPER_ID_APPLICATION:-}}"
 readonly SIGNING_KEYCHAIN="${MACOS_SIGNING_KEYCHAIN:-}"

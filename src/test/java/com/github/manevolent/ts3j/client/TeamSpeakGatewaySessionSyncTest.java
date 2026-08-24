@@ -221,6 +221,48 @@ public class TeamSpeakGatewaySessionSyncTest {
     }
 
     @Test
+    public void privateMarkerCanRecoverAfterCachedPeerChannelBecomesStale() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(coordinator, clock);
+        try {
+            Map<Integer, java.util.Collection<Integer>> localOnly = new HashMap<>();
+            localOnly.put(1, java.util.Collections.<Integer>singleton(8));
+            coordinator.reconcile(SERVER, localOnly, NOW, "local-bootstrap", 0, 8);
+
+            java.lang.reflect.Field config = TeamSpeakGateway.class.getDeclaredField("config");
+            config.setAccessible(true);
+            config.set(gateway, new ConnectionConfig("voice.example", 9987, "", "tester", null));
+            java.lang.reflect.Field clients = TeamSpeakGateway.class.getDeclaredField("clients");
+            clients.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<Integer, ClientView> cached = (Map<Integer, ClientView>) clients.get(gateway);
+            cached.put(7, new ClientView(7, 99, "peer", 0, false, false));
+            java.lang.reflect.Method pendingPeer = TeamSpeakGateway.class.getDeclaredMethod(
+                    "rememberRecentSessionMarkerPeerRequest", String.class, int.class, int.class);
+            pendingPeer.setAccessible(true);
+            pendingPeer.invoke(gateway, SERVER, 1, 7);
+
+            String encodedServer = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    SERVER.getBytes(StandardCharsets.UTF_8));
+            Map<String, String> marker = new HashMap<>();
+            marker.put("targetmode", "1");
+            marker.put("invokerid", "7");
+            marker.put("msg", "ts3j-session-v1|" + encodedServer + "|1|" + START);
+            gateway.onTextMessage(new TextMessageEvent(marker));
+
+            VoiceRoomSession session = coordinator.snapshot()
+                    .get(new SessionKey(SERVER, 1));
+            assertTrue(session.isStartKnown());
+            assertEquals(START, session.getVoiceSessionStart());
+            assertTrue(session.getPresentUsers().contains(7));
+        } finally {
+            gateway.close();
+        }
+    }
+
+    @Test
     public void channelMarkerReceivedBeforeReconnectSnapshotKeepsTheSharedStart() throws Exception {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(

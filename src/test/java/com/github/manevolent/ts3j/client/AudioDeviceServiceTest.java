@@ -80,4 +80,19 @@ public class AudioDeviceServiceTest {
         mixed = AudioDeviceService.mixPcmFrames(Arrays.asList(first, second));
         assertEquals(Short.MAX_VALUE, (short) ((mixed[0] & 0xff) | (mixed[1] << 8)));
     }
+
+    @Test
+    public void playbackBoundaryIsRampedToAvoidClicks() {
+        byte[] frame = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
+        for (int i = 0; i < frame.length; i += 2) {
+            frame[i] = (byte) 0xff;
+            frame[i + 1] = 0x7f;
+        }
+        byte[] smoothed = AudioDeviceService.smoothPcmBoundary(frame, (short) -32768, true);
+        int first = (short) ((smoothed[0] & 0xff) | (smoothed[1] << 8));
+        int later = (short) ((smoothed[AudioDeviceService.VOICE_FRAME_BYTES - 2] & 0xff)
+                | (smoothed[AudioDeviceService.VOICE_FRAME_BYTES - 1] << 8));
+        assertTrue(first > Short.MIN_VALUE && first < -30000);
+        assertEquals(Short.MAX_VALUE, later);
+    }
 }

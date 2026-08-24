@@ -38,6 +38,7 @@ final class AudioDeviceService implements AutoCloseable {
     private static final int PLAYBACK_QUEUE_CAPACITY_PER_SOURCE = 8;
     private static final int PLAYBACK_PREBUFFER_FRAMES = 3;
     private static final int PLAYBACK_INPUT_CAPACITY = 128;
+    private static final int PLAYBACK_BOUNDARY_RAMP_SAMPLES = 96; // 2 ms at 48 kHz
     /** RMS level at which the tray indicator turns on immediately. */
     static final double VOICE_ON_THRESHOLD = VoiceActivityDetector.ON_THRESHOLD;
 
@@ -283,12 +284,16 @@ final class AudioDeviceService implements AutoCloseable {
             Map<Integer, Deque<byte[]>> pendingBySource = new HashMap<>();
             boolean primed = false;
             long queueEpoch = playbackQueueEpoch;
+            short previousPlaybackSample = 0;
+            boolean hasPreviousPlaybackSample = false;
             byte[] silence = new byte[VOICE_FRAME_BYTES];
             try {
                 while (running && playbackLine == line && !Thread.currentThread().isInterrupted()) {
                     if (queueEpoch != playbackQueueEpoch) {
                         pendingBySource.clear();
                         primed = false;
+                        previousPlaybackSample = 0;
+                        hasPreviousPlaybackSample = false;
                         queueEpoch = playbackQueueEpoch;
                     }
                     drainPlaybackFrames(pendingBySource);
@@ -307,6 +312,10 @@ final class AudioDeviceService implements AutoCloseable {
                     primed = true;
                     byte[] pcm = mixNextPlaybackFrame(pendingBySource);
                     if (pcm == null) pcm = silence;
+                    pcm = smoothPcmBoundary(pcm, previousPlaybackSample,
+                            hasPreviousPlaybackSample);
+                    previousPlaybackSample = readSample(pcm, VOICE_FRAME_SAMPLES - 1);
+                    hasPreviousPlaybackSample = true;
                     byte[] output = resamplePcm(pcm, VOICE_SAMPLE_RATE,
                             line.getFormat().getSampleRate());
                     line.write(output, 0, output.length);
@@ -536,6 +545,29 @@ final class AudioDeviceService implements AutoCloseable {
             mixed[sample * 2 + 1] = (byte) ((value >>> 8) & 0xff);
         }
         return mixed;
+    }
+
+    /**
+     * Crossfades the beginning of each 20 ms frame from the previous frame's
+     * final sample. This removes the single-sample discontinuity that can
+     * become an audible click when a packet is late, dropped, or replaced by
+     * silence, without adding a noticeable conversational delay.
+     */
+    static byte[] smoothPcmBoundary(byte[] pcm, short previousSample,
+                                    boolean hasPreviousSample) {
+        byte[] smoothed = new byte[VOICE_FRAME_BYTES];
+        if (pcm == null) return smoothed;
+        System.arraycopy(pcm, 0, smoothed, 0, Math.min(pcm.length, smoothed.length));
+        int rampSamples = Math.min(PLAYBACK_BOUNDARY_RAMP_SAMPLES, VOICE_FRAME_SAMPLES);
+        int previous = hasPreviousSample ? previousSample : 0;
+        for (int sample = 0; sample < rampSamples; sample++) {
+            int current = readSample(smoothed, sample);
+            double progress = (sample + 1.0D) / rampSamples;
+            int value = (int) Math.round(previous + (current - previous) * progress);
+            smoothed[sample * 2] = (byte) (value & 0xff);
+            smoothed[sample * 2 + 1] = (byte) ((value >>> 8) & 0xff);
+        }
+        return smoothed;
     }
 
     private static String deviceKey(Mixer.Info info) {
