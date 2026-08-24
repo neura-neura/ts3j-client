@@ -190,7 +190,7 @@ application has no Inno Setup runtime dependency). The modern deliverable is
 For an Apple Silicon macOS installer, run the independent macOS build script:
 
 ```bash
-./installer/build-installer-macos.sh 1.0.14
+./installer/build-installer-macos.sh 1.0.15
 ```
 
 It requires JDK 17+, Maven, and the macOS command-line tools. The build runs the

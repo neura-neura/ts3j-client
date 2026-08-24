@@ -94,6 +94,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private final List<Consumer<TeamSpeakActivity>> activityListeners = new CopyOnWriteArrayList<>();
     private final Map<Integer, ChannelView> channels = new HashMap<>();
     private final Map<Integer, ClientView> clients = new HashMap<>();
+    /** Client ids reserved for ServerQuery helpers; never render or count them. */
+    private final Set<Integer> nonUserClientIds = new HashSet<>();
     private final Map<Integer, List<ChannelTextMessage>> channelMessages = new HashMap<>();
     private final Map<Integer, Integer> channelHistoryBoundaries = new HashMap<>();
     private final Map<String, Instant> recentEventSignatures = new HashMap<>();
@@ -198,6 +200,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         errorMessage = "";
         chatHistoryWarning = "";
         permissionsLimited = false;
+        nonUserClientIds.clear();
         pendingSessionMarkers.clear();
         pendingServerSessionMarkers.clear();
         latestServerSessionStarts.clear();
@@ -1301,6 +1304,13 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         try {
             for (Client client : current.listClients()) {
                 ClientView view = toClient(client);
+                // ServerQuery connections are protocol helpers, not people in
+                // the voice room. Excluding them here keeps the occupancy
+                // snapshot and the rendered roster in agreement.
+                if (!isRealClient(view)) {
+                    nonUserClientIds.add(view.getId());
+                    continue;
+                }
                 loadedClients.put(view.getId(), view);
             }
             clientListLoaded = true;
@@ -1468,6 +1478,10 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     public void onClientJoin(ClientJoinEvent event) {
         if (isDuplicate("join", event.getMap())) return;
         Client client = new Client(event.getMap());
+        if (client.getType() != 0) {
+            nonUserClientIds.add(client.getId());
+            return;
+        }
         int channelId = event.getClientTargetId() >= 0
                 ? event.getClientTargetId() : client.getChannelId();
         ClientView view = toClient(client, channelId);
@@ -1525,6 +1539,16 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         String nickname;
         synchronized (this) {
             ClientView previous = clients.get(clientId);
+            if (nonUserClientIds.contains(clientId)
+                    || (previous != null && !isRealClient(previous))
+                    || mapInt(event.getMap(), "client_type", 0) != 0) {
+                if (mapInt(event.getMap(), "client_type", 0) != 0) {
+                    nonUserClientIds.add(clientId);
+                }
+                clients.remove(clientId);
+                publish();
+                return;
+            }
             if (from < 0 && previous != null) from = previous.getChannelId();
             ClientView old = previous == null ? null : previous;
             previousCurrentChannel = currentChannelId;
@@ -1578,7 +1602,15 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         boolean localClient;
         String nickname;
         synchronized (this) {
-            ClientView previous = clients.remove(clientId);
+            ClientView previous = clients.get(clientId);
+            if (nonUserClientIds.remove(clientId)
+                    || (previous != null && !isRealClient(previous))
+                    || mapInt(event.getMap(), "client_type", 0) != 0) {
+                clients.remove(clientId);
+                publish();
+                return;
+            }
+            clients.remove(clientId);
             if (from < 0 && previous != null) from = previous.getChannelId();
             previousCurrentChannel = currentChannelId;
             localClient = clientId == localClientId();
@@ -1607,8 +1639,9 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         TeamSpeakActivity outputActivity = null;
         TeamSpeakActivity awayActivity = null;
         synchronized (this) {
+            if (nonUserClientIds.contains(clientId)) return;
             ClientView previous = clients.get(clientId);
-            if (previous != null) {
+            if (previous != null && isRealClient(previous)) {
                 Client raw = new Client(event.getMap());
                 boolean inputMuted = hasClientFlag(event.getMap(), "client_input_muted", previous.isInputMuted());
                 boolean outputMuted = hasClientFlag(event.getMap(), "client_output_muted", previous.isOutputMuted());
@@ -1664,6 +1697,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             status = ConnectionStatus.DISCONNECTED;
             currentChannelId = -1;
             clients.clear();
+            nonUserClientIds.clear();
             channels.clear();
             channelMessages.clear();
             channelHistoryBoundaries.clear();
@@ -1926,6 +1960,10 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             this.serverId = serverId;
             this.channelId = channelId;
         }
+    }
+
+    private static boolean isRealClient(ClientView view) {
+        return view != null && view.getType() == 0;
     }
 
     private static final class ServerSessionMarker {

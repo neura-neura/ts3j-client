@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class TeamSpeakActivityTest {
@@ -39,6 +40,36 @@ public class TeamSpeakActivityTest {
                     activities.get(0).getType());
             assertEquals(TeamSpeakActivity.Type.CLIENT_LEFT_CURRENT_CHANNEL,
                     activities.get(1).getType());
+        } finally {
+            gateway.close();
+        }
+    }
+
+    @Test
+    public void serverQueryClientsAreNotRenderedOrCountedAsVoiceUsers() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-21T12:00:00Z"), ZoneOffset.UTC);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(
+                new VoiceSessionCoordinator(new InMemoryVoiceSessionRepository(), clock), clock,
+                new InMemoryChannelChatRepository());
+        try {
+            Map<String, String> query = clientMap(7, 42, "neura1");
+            query.put("client_type", "1");
+            gateway.onClientJoin(new ClientJoinEvent(query));
+
+            assertFalse(gateway.snapshot().getClients().containsKey(7));
+            assertTrue(gateway.snapshot().getSessions().getSessions().isEmpty());
+
+            // A later move event may omit client_type; the remembered query id
+            // must still be ignored until its leave event arrives.
+            Map<String, String> moved = new HashMap<>();
+            moved.put("clid", "7");
+            moved.put("ctid", "43");
+            gateway.onClientMoved(new com.github.manevolent.ts3j.event.ClientMovedEvent(moved));
+            assertFalse(gateway.snapshot().getClients().containsKey(7));
+
+            gateway.onClientLeave(new ClientLeaveEvent(query));
+            gateway.onClientJoin(new ClientJoinEvent(clientMap(7, 42, "aruen")));
+            assertTrue(gateway.snapshot().getClients().containsKey(7));
         } finally {
             gateway.close();
         }
