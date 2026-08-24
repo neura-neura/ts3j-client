@@ -206,14 +206,19 @@ final class SessionMutationEngine {
                 && existing != null && start.isBefore(existing)) {
             // This connection already observed a real empty-to-occupied
             // transition. A peer's older persisted marker belongs to a prior
-            // occupancy and must not replace that fresh start.
-            return;
+            // occupancy and must not replace that fresh start. If another
+            // user has since been observed in the same channel, however, the
+            // peer marker is evidence that this was not actually a sole-local
+            // snapshot (for example, a restricted identity hid that peer).
+            if (current.getPresentUsers().size() <= 1) return;
         }
         // Several app instances may announce the same transition at nearly
         // the same time. The earliest trusted marker is deterministic and
         // avoids shortening a session because messages arrived out of order.
         if (current.isStartKnown() && existing != null && !start.isBefore(existing)) return;
-        state.sessions.put(key, current.withStart(start, true,
+        boolean stillLocalBootstrap = current.isLocallyBootstrapped()
+                && current.getPresentUsers().size() <= 1;
+        state.sessions.put(key, current.withStart(start, true, stillLocalBootstrap,
                 current.getPresentUsers(), state.revision + 1));
     }
 }

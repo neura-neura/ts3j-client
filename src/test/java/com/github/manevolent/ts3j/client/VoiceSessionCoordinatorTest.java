@@ -247,6 +247,25 @@ public class VoiceSessionCoordinatorTest {
     }
 
     @Test
+    public void peerMarkerCorrectsARestrictedLocalOnlySnapshot() {
+        VoiceSessionCoordinator coordinator = coordinator(new InMemoryVoiceSessionRepository());
+        Map<Integer, java.util.Collection<Integer>> localOnly = new LinkedHashMap<>();
+        localOnly.put(10, Collections.<Integer>singleton(101));
+        coordinator.reconcile(SERVER, localOnly, EIGHTEEN, "fresh-local-bootstrap", 0, 101);
+
+        // A private marker request is evidence that another client is really
+        // present even if this identity could not list it in the snapshot.
+        coordinator.join(SERVER, 10, 102, EIGHTEEN, true, "peer-request", 0);
+        VoiceRoomSession adopted = session(coordinator.adoptSessionStart(SERVER, 10,
+                TEN, "peer-marker"), 10);
+
+        assertTrue(adopted.isStartKnown());
+        assertEquals(TEN, adopted.getVoiceSessionStart());
+        assertEquals(2, adopted.getPresentUsers().size());
+        assertTrue(adopted.getPresentUsers().contains(102));
+    }
+
+    @Test
     public void restartPreservesAuthoritativeStart() throws Exception {
         Path directory = Files.createTempDirectory("ts3j-session-restart");
         Path statePath = directory.resolve("sessions.db");
