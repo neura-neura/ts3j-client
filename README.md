@@ -190,7 +190,7 @@ application has no Inno Setup runtime dependency). The modern deliverable is
 For an Apple Silicon macOS installer, run the independent macOS build script:
 
 ```bash
-./installer/build-installer-macos.sh 1.0.8
+./installer/build-installer-macos.sh 1.0.9
 ```
 
 It requires JDK 17+, Maven, and the macOS command-line tools. The build runs the
@@ -293,18 +293,18 @@ The desktop client exposes the TeamSpeak `clientupdate` controls for away
 status, manual microphone mute (`client_input_muted`) and speakers/headphones
 mute (`client_output_muted`). Their accepted state is reflected in the local
 client row and in the other clients' channel lists through TeamSpeak events.
-The bundled ts3j layer still does not provide a TeamSpeak capture/playback
-transport implementation, so these controls change the authoritative TeamSpeak
-mute state; the local Java Sound monitor described below is intentionally
-separate from that transport state.
+Voice is now routed through ts3j's real UDP packet transport: Java Sound
+captures 48 kHz mono frames, the bundled pure-Java Concentus codec encodes
+TeamSpeak Opus packets, and incoming packets are decoded per speaker into the
+selected playback device. The mute flag stops outbound frames while the
+speakers flag remains the server-authoritative playback preference.
 
 Each voice user has a context menu (right click, or the keyboard context-menu
 key when the row is focused) with a local volume modifier from -50.0 dB to
 +20.0 dB. The value is persisted per server and TeamSpeak unique identifier;
-it is intentionally not sent as a server command. The official TeamSpeak SDK
-applies this modifier in its local playback mixer, while the current ts3j
-desktop shell does not yet ship a playback device/mixer, so the setting is
-stored and displayed without pretending to change server audio.
+it is intentionally not sent as a server command. The local playback bridge
+applies this modifier after decoding each speaker's Opus frame, matching the
+official client's per-user volume behavior without changing server audio.
 
 The desktop shell allows only one running instance per operating-system user. Launching
 the executable again sends a local focus request to the existing process and
@@ -318,13 +318,12 @@ or input noise do not make the indicator flash.
 
 Preferences also include a combined local audio panel. It enumerates Java
 Sound capture and playback devices, remembers the selected IDs, shows live
-microphone and application-output meters, and can play a short test tone. This
-panel is intentionally transparent about the current ts3j boundary: the
-meters and test tone use the operating system's Java Sound devices, while the
-ts3j layer still has no TeamSpeak codec/voice playback backend. Selecting a
-device therefore prepares local monitoring but does not, by itself, route
-TeamSpeak voice through that device. The microphone meter is processed locally
-only while the app is open; its level is not uploaded by this client.
+microphone and application-output meters, and can play a short test tone. The
+same selected devices are used by the live voice bridge when connected. Opus
+channels are supported directly; legacy Speex/CELT channels remain visible but
+do not transmit until a compatible codec adapter is added. The microphone
+meter is processed locally only while the app is open; its level is not
+uploaded by this client.
 
 The application preferences dialog also exposes platform-native startup and
 close-to-tray behavior. Windows uses the current user's Startup folder; macOS

@@ -174,6 +174,8 @@ public final class TeamSpeakDesktopApp extends Application {
         }
         coordinator = new VoiceSessionCoordinator(repository, clock);
         gateway = new TeamSpeakGateway(coordinator, clock);
+        gateway.setAudioDeviceService(audioDeviceService);
+        gateway.setClientVolumeStore(clientVolumeStore);
         gateway.addActivityListener(activity -> voiceNotificationService.enqueue(activity));
         gateway.addListener(snapshot -> {
             if (Platform.isFxApplicationThread()) {

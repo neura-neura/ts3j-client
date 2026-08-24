@@ -41,4 +41,17 @@ public class AudioDeviceServiceTest {
         assertTrue(detector.update(0.03D, 20L));
         assertTrue(detector.isActive());
     }
+
+    @Test
+    public void resamplerKeepsPcmLengthAtTeamSpeakFrameRate() {
+        byte[] source = new byte[882 * 2]; // 20 ms at 44.1 kHz
+        for (int i = 0; i < source.length; i += 2) {
+            source[i] = 0x34;
+            source[i + 1] = 0x12;
+        }
+        byte[] result = AudioDeviceService.resamplePcm(source, 44100.0F, 48000.0F);
+        assertEquals(AudioDeviceService.VOICE_FRAME_BYTES, result.length);
+        assertEquals(0x34, result[100] & 0xff);
+        assertEquals(0x12, result[101] & 0xff);
+    }
 }

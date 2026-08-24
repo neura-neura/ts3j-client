@@ -221,6 +221,58 @@ public class TeamSpeakGatewaySessionSyncTest {
     }
 
     @Test
+    public void channelMarkerReceivedBeforeReconnectSnapshotKeepsTheSharedStart() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(coordinator, clock);
+        try {
+            java.lang.reflect.Field config = TeamSpeakGateway.class.getDeclaredField("config");
+            config.setAccessible(true);
+            config.set(gateway, new ConnectionConfig("voice.example", 9987, "", "tester", null));
+            java.lang.reflect.Field initialSync = TeamSpeakGateway.class
+                    .getDeclaredField("initialSync");
+            initialSync.setAccessible(true);
+            initialSync.setBoolean(gateway, true);
+            java.lang.reflect.Field stateReady = TeamSpeakGateway.class
+                    .getDeclaredField("sessionStateReady");
+            stateReady.setAccessible(true);
+            stateReady.setBoolean(gateway, false);
+
+            String encodedServer = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    SERVER.getBytes(StandardCharsets.UTF_8));
+            Map<String, String> marker = new HashMap<>();
+            marker.put("targetmode", "2");
+            marker.put("target", "1");
+            marker.put("invokerid", "7");
+            marker.put("msg", "ts3j-session-v1|" + encodedServer + "|1|" + START);
+            // The peer's marker can arrive before this reconnect's restricted
+            // client snapshot, which only contains the local client (8).
+            gateway.onTextMessage(new TextMessageEvent(marker));
+
+            Map<Integer, java.util.Collection<Integer>> localOnly = new HashMap<>();
+            localOnly.put(1, Arrays.<Integer>asList(8));
+            coordinator.reconcile(SERVER, localOnly, NOW, "reconnect-snapshot", 0, 8);
+
+            java.lang.reflect.Method applyPending = TeamSpeakGateway.class
+                    .getDeclaredMethod("applyPendingSessionMarkers");
+            applyPending.setAccessible(true);
+            stateReady.setBoolean(gateway, true);
+            initialSync.setBoolean(gateway, false);
+            applyPending.invoke(gateway);
+
+            VoiceRoomSession synchronizedSession = coordinator.snapshot()
+                    .get(new SessionKey(SERVER, 1));
+            assertTrue(synchronizedSession.isStartKnown());
+            assertEquals(START, synchronizedSession.getVoiceSessionStart());
+            assertTrue(synchronizedSession.getPresentUsers().contains(7));
+            assertTrue(synchronizedSession.getPresentUsers().contains(8));
+        } finally {
+            gateway.close();
+        }
+    }
+
+    @Test
     public void channelBroadcastSynchronizesARestrictedPeerWithoutClientIds() throws Exception {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         VoiceSessionCoordinator macSessions = new VoiceSessionCoordinator(
@@ -277,6 +329,39 @@ public class TeamSpeakGatewaySessionSyncTest {
         } finally {
             windows.close();
             mac.close();
+        }
+    }
+
+    @Test
+    public void channelMarkerRequestIsSentAgainAfterARejoin() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(coordinator, clock);
+        RecordingSocket socket = new RecordingSocket();
+        socket.setClientId(8);
+        try {
+            configure(gateway, socket);
+            java.lang.reflect.Method request = TeamSpeakGateway.class.getDeclaredMethod(
+                    "queueChannelSessionMarkerRequest", LocalTeamspeakClientSocket.class,
+                    int.class);
+            request.setAccessible(true);
+            request.invoke(gateway, socket, 1);
+            request.invoke(gateway, socket, 1);
+
+            long deadline = System.nanoTime() + 1_000_000_000L;
+            while (System.nanoTime() < deadline) {
+                synchronized (socket.messages) {
+                    long count = socket.messages.stream()
+                            .filter(message -> message.startsWith("ts3j-session-channel-request-v1|"))
+                            .count();
+                    if (count >= 2) return;
+                }
+                Thread.sleep(10L);
+            }
+            throw new AssertionError("The rejoin request was suppressed: " + socket.messages);
+        } finally {
+            gateway.close();
         }
     }
 

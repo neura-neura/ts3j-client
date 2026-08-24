@@ -18,6 +18,7 @@ import com.github.manevolent.ts3j.event.TS3Listener;
 import com.github.manevolent.ts3j.event.TextMessageEvent;
 import com.github.manevolent.ts3j.api.TextMessageTargetMode;
 import com.github.manevolent.ts3j.identity.LocalIdentity;
+import com.github.manevolent.ts3j.enums.CodecType;
 import com.github.manevolent.ts3j.protocol.socket.client.LocalTeamspeakClientSocket;
 
 import java.io.File;
@@ -94,6 +95,9 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private final Map<String, Instant> recentSessionMarkerSends = new HashMap<>();
 
     private volatile LocalTeamspeakClientSocket socket;
+    private volatile AudioDeviceService audioDeviceService;
+    private volatile TeamSpeakAudioBridge audioBridge;
+    private volatile ClientVolumeStore clientVolumeStore;
     private volatile ConnectionConfig config;
     private volatile ConnectionStatus status = ConnectionStatus.DISCONNECTED;
     private volatile String errorMessage = "";
@@ -139,6 +143,21 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         activityListeners.remove(listener);
     }
 
+    /**
+     * Attaches the selected Java Sound devices to ts3j's real UDP voice
+     * transport. The setter is intentionally package-private: the desktop
+     * shell owns hardware lifetime while this gateway owns TeamSpeak state.
+     */
+    synchronized void setAudioDeviceService(AudioDeviceService service) {
+        if (audioBridge != null) audioBridge.close();
+        audioDeviceService = service;
+        audioBridge = null;
+    }
+
+    synchronized void setClientVolumeStore(ClientVolumeStore store) {
+        clientVolumeStore = store;
+    }
+
     public synchronized GatewaySnapshot snapshot() {
         return createSnapshot();
     }
@@ -181,6 +200,19 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         nextSocket.addListener(this);
         nextSocket.setNickname(connectionConfig.getNickname());
         nextSocket.setOption("client.meta_data", CLIENT_SESSION_METADATA);
+        final TeamSpeakAudioBridge nextAudioBridge = audioDeviceService == null ? null
+                : new TeamSpeakAudioBridge(audioDeviceService, this::currentVoiceCodec,
+                        this::currentVoiceVolumeDb);
+        if (nextAudioBridge != null) {
+            nextAudioBridge.setMuted(false);
+            audioDeviceService.clearCaptureFrames();
+            nextSocket.setMicrophone(nextAudioBridge);
+            nextSocket.setVoiceHandler(packet -> {
+                TeamSpeakAudioBridge active = audioBridge;
+                if (active == nextAudioBridge) active.handleVoicePacket(packet);
+            });
+        }
+        audioBridge = nextAudioBridge;
         socket = nextSocket;
 
         ioExecutor.submit(new Runnable() {
@@ -197,6 +229,10 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                         status = ConnectionStatus.ERROR;
                         errorMessage = friendlyMessage(error);
                         sessionStateReady = false;
+                        if (audioBridge == nextAudioBridge) {
+                            if (audioBridge != null) audioBridge.close();
+                            audioBridge = null;
+                        }
                     }
                     publish();
                     closeSocket(nextSocket);
@@ -234,6 +270,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                             pendingSessionMarkerRequests.clear();
                             pendingSessionChannelRequests.clear();
                             recentSessionMarkerSends.clear();
+                            if (audioBridge != null) audioBridge.close();
+                            audioBridge = null;
                             initialSync = false;
                             sessionStateReady = true;
                         }
@@ -275,6 +313,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
 
     public synchronized void setMicrophoneMuted(boolean muted) {
         requireLocalClient();
+        if (audioBridge != null) audioBridge.setMuted(muted);
         queueClientFlagUpdate("client_input_muted", muted);
     }
 
@@ -285,6 +324,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
 
     public synchronized void setAudioMuted(boolean muted) {
         requireLocalClient();
+        if (audioBridge != null) audioBridge.setOutputMuted(muted);
         queueClientFlagUpdate("client_output_muted", muted);
     }
 
@@ -343,8 +383,10 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             clients.put(clientId, local.withAway(value));
         } else if ("client_input_muted".equals(property)) {
             clients.put(clientId, local.withInputMuted(value));
+            if (audioBridge != null) audioBridge.setMuted(value);
         } else if ("client_output_muted".equals(property)) {
             clients.put(clientId, local.withOutputMuted(value));
+            if (audioBridge != null) audioBridge.setOutputMuted(value);
         }
     }
 
@@ -517,7 +559,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         }
         String eventId = "session-marker:" + senderId + ":" + marker.channelId
                 + ":" + marker.start;
-        adoptOrQueueSessionStart(marker.serverId, marker.channelId, marker.start, eventId);
+        adoptOrQueueSessionStart(marker.serverId, marker.channelId, marker.start, eventId,
+                senderId);
         publish();
         return true;
     }
@@ -627,7 +670,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     }
 
     private void adoptOrQueueSessionStart(String serverId, int channelId,
-                                          Instant start, String eventId) {
+                                          Instant start, String eventId,
+                                          int peerId) {
         SessionKey key = new SessionKey(serverId, channelId);
         // During the initial snapshot the repository can still contain a
         // persisted timer from an older occupancy. Defer peer markers until
@@ -635,7 +679,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         // can be compared against (and rejected by) the stale timer.
         if (initialSync || !sessionStateReady) {
             synchronized (this) {
-                pendingSessionMarkers.put(key, new PendingSessionMarker(start, clock.instant()));
+                pendingSessionMarkers.put(key, new PendingSessionMarker(start, clock.instant(),
+                        peerId));
             }
             return;
         }
@@ -645,7 +690,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             return;
         }
         synchronized (this) {
-            pendingSessionMarkers.put(key, new PendingSessionMarker(start, clock.instant()));
+            pendingSessionMarkers.put(key, new PendingSessionMarker(start, clock.instant(),
+                    peerId));
         }
     }
 
@@ -666,6 +712,16 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             }
             VoiceRoomSession current = sessions.snapshot().get(entry.getKey());
             if (current == null || !current.isOccupied()) continue;
+            if (marker.peerId >= 0) {
+                // A marker can arrive before a restricted snapshot reveals
+                // its sender (for either a private response or a channel
+                // broadcast). Preserve that hidden presence before comparing
+                // the marker with a local-only bootstrap.
+                rememberSessionMarkerPeer(entry.getKey().getServerId(),
+                        entry.getKey().getChannelId(), marker.peerId);
+                current = sessions.snapshot().get(entry.getKey());
+                if (current == null || !current.isOccupied()) continue;
+            }
             sessions.adoptSessionStart(entry.getKey().getServerId(), entry.getKey().getChannelId(),
                     marker.start, "pending-session-marker:" + entry.getKey());
             synchronized (this) {
@@ -751,9 +807,11 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                     if (socket != expectedSocket || initialSync || !sessionStateReady) return;
                     String marker = sessionMarker(channelId);
                     if (marker == null) return;
-                    if (!rememberSessionMarkerSend("channel-response:" + channelId + ":" + marker)) {
-                        return;
-                    }
+                    // A channel broadcast is the response to a fresh
+                    // occupancy transition. Do not suppress it using the
+                    // sender's old reconnect window: a client may have left
+                    // immediately after the previous response and therefore
+                    // needs the marker again when it re-enters.
                     expectedSocket.sendChannelMessage(channelId, marker);
                 } catch (Throwable ignored) {
                     // A marker is an optional convergence aid.
@@ -799,7 +857,10 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             public void run() {
                 try {
                     if (socket != expectedSocket || initialSync || !sessionStateReady) return;
-                    if (!rememberSessionMarkerSend("channel-request:" + channelId)) return;
+                    // This request is deliberately emitted for every join or
+                    // rejoin event. Suppressing it for a few seconds would
+                    // lose the only response when the client left the channel
+                    // before the previous broadcast arrived.
                     expectedSocket.sendChannelMessage(channelId,
                             sessionChannelMarkerRequest(channelId));
                 } catch (Throwable ignored) {
@@ -1037,6 +1098,11 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             status = currentChannelId >= 0
                     ? ConnectionStatus.CONNECTED_IN_CHANNEL : ConnectionStatus.CONNECTED_NO_CHANNEL;
             permissionsLimited = limited;
+        }
+        if (audioBridge != null) {
+            ClientView localView = effectiveClients.get(current.getClientId());
+            audioBridge.setMuted(localView != null && localView.isInputMuted());
+            audioBridge.setOutputMuted(localView != null && localView.isOutputMuted());
         }
         Map<Integer, List<Integer>> usersByChannel = new TreeMap<>();
         for (ClientView view : effectiveClients.values()) {
@@ -1334,6 +1400,8 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             pendingSessionMarkers.clear();
             pendingSessionMarkerRequests.clear();
             recentSessionMarkerSends.clear();
+            if (audioBridge != null) audioBridge.close();
+            audioBridge = null;
             initialSync = false;
             sessionStateReady = true;
         }
@@ -1371,6 +1439,23 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
 
     private synchronized String serverName() {
         return config == null ? "" : config.getHost();
+    }
+
+    private synchronized CodecType currentVoiceCodec() {
+        ChannelView channel = channels.get(currentChannelId);
+        if (channel == null || channel.getCodec() == null || channel.getCodec().trim().isEmpty()) {
+            return CodecType.OPUS_VOICE;
+        }
+        try {
+            return CodecType.valueOf(channel.getCodec().trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return CodecType.OPUS_VOICE;
+        }
+    }
+
+    private synchronized double currentVoiceVolumeDb(int clientId) {
+        if (clientVolumeStore == null || config == null) return 0.0D;
+        return clientVolumeStore.get(config.serverId(), clients.get(clientId));
     }
 
     private void emitActivity(TeamSpeakActivity activity) {
@@ -1581,10 +1666,12 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private static final class PendingSessionMarker {
         private final Instant start;
         private final Instant receivedAt;
+        private final int peerId;
 
-        private PendingSessionMarker(Instant start, Instant receivedAt) {
+        private PendingSessionMarker(Instant start, Instant receivedAt, int peerId) {
             this.start = start;
             this.receivedAt = receivedAt;
+            this.peerId = peerId;
         }
     }
 
