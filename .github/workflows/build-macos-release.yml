@@ -1,0 +1,50 @@
+name: Build macOS release asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to build
+        required: true
+        type: string
+      tag:
+        description: Existing Git tag/release to receive the DMG
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # The build script intentionally requires Apple Silicon and ARM64 JDKs.
+    runs-on: macos-14
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up ARM64 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          architecture: aarch64
+          cache: maven
+
+      - name: Install Maven
+        run: brew install maven
+
+      - name: Build and verify the Apple Silicon DMG
+        run: |
+          chmod +x installer/build-installer-macos.sh
+          ./installer/build-installer-macos.sh "${{ inputs.version }}"
+
+      - name: Upload the DMG to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            "dist/ts3j-client-${{ inputs.version }}-macos-aarch64.dmg" \
+            --repo "${{ github.repository }}" --clobber

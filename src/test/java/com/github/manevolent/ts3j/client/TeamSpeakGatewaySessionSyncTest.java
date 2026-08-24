@@ -220,12 +220,105 @@ public class TeamSpeakGatewaySessionSyncTest {
         }
     }
 
+    @Test
+    public void channelBroadcastSynchronizesARestrictedPeerWithoutClientIds() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator macSessions = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        VoiceSessionCoordinator windowsSessions = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway mac = new TeamSpeakGateway(macSessions, clock);
+        TeamSpeakGateway windows = new TeamSpeakGateway(windowsSessions, clock);
+        RecordingSocket macSocket = new RecordingSocket();
+        RecordingSocket windowsSocket = new RecordingSocket();
+        macSocket.setClientId(7);
+        windowsSocket.setClientId(8);
+        try {
+            configure(mac, macSocket);
+            configure(windows, windowsSocket);
+
+            Map<Integer, java.util.Collection<Integer>> macOnly = new HashMap<>();
+            macOnly.put(1, Arrays.<Integer>asList(7));
+            macSessions.reconcile(SERVER, macOnly, START, "mac-bootstrap", 0, 7);
+
+            // Windows can see its own occupied channel but not the peer's id.
+            Map<Integer, java.util.Collection<Integer>> windowsOnly = new HashMap<>();
+            windowsOnly.put(1, Arrays.<Integer>asList(8));
+            windowsSessions.reconcile(SERVER, windowsOnly, NOW, "windows-bootstrap", 0, 8);
+
+            java.lang.reflect.Method request = TeamSpeakGateway.class.getDeclaredMethod(
+                    "queueChannelSessionMarkerRequest", LocalTeamspeakClientSocket.class,
+                    int.class);
+            request.setAccessible(true);
+            request.invoke(windows, windowsSocket, 1);
+
+            String channelRequest = awaitMessage(windowsSocket, "ts3j-session-channel-request-v1|");
+            Map<String, String> requestEvent = new HashMap<>();
+            requestEvent.put("targetmode", "2");
+            requestEvent.put("target", "1");
+            requestEvent.put("invokerid", "8");
+            requestEvent.put("msg", channelRequest);
+            mac.onTextMessage(new TextMessageEvent(requestEvent));
+
+            String marker = awaitMessage(macSocket, "ts3j-session-v1|");
+            Map<String, String> markerEvent = new HashMap<>();
+            markerEvent.put("targetmode", "2");
+            markerEvent.put("target", "1");
+            markerEvent.put("invokerid", "7");
+            markerEvent.put("msg", marker);
+            windows.onTextMessage(new TextMessageEvent(markerEvent));
+
+            VoiceRoomSession synchronizedSession = windowsSessions.snapshot()
+                    .get(new SessionKey(SERVER, 1));
+            assertTrue(synchronizedSession.isStartKnown());
+            assertEquals(START, synchronizedSession.getVoiceSessionStart());
+            assertTrue(synchronizedSession.getPresentUsers().contains(7));
+            assertTrue(synchronizedSession.getPresentUsers().contains(8));
+        } finally {
+            windows.close();
+            mac.close();
+        }
+    }
+
+    private static void configure(TeamSpeakGateway gateway, RecordingSocket socket)
+            throws Exception {
+        java.lang.reflect.Field config = TeamSpeakGateway.class.getDeclaredField("config");
+        config.setAccessible(true);
+        config.set(gateway, new ConnectionConfig("voice.example", 9987, "", "tester", null));
+        java.lang.reflect.Field socketField = TeamSpeakGateway.class.getDeclaredField("socket");
+        socketField.setAccessible(true);
+        socketField.set(gateway, socket);
+    }
+
+    private static String awaitMessage(RecordingSocket socket, String prefix)
+            throws Exception {
+        long deadline = System.nanoTime() + 1_000_000_000L;
+        while (System.nanoTime() < deadline) {
+            synchronized (socket.messages) {
+                for (String message : socket.messages) {
+                    if (message.startsWith(prefix)) return message;
+                }
+            }
+            Thread.sleep(10L);
+        }
+        throw new AssertionError("Timed out waiting for " + prefix + ": " + socket.messages);
+    }
+
     private static final class RecordingSocket extends LocalTeamspeakClientSocket {
         private final List<String> messages = new ArrayList<>();
 
         @Override
         public void sendPrivateMessage(int clientId, String message) {
-            messages.add(message);
+            synchronized (messages) {
+                messages.add(message);
+            }
+        }
+
+        @Override
+        public void sendChannelMessage(int channelId, String message) {
+            synchronized (messages) {
+                messages.add(message);
+            }
         }
     }
 }

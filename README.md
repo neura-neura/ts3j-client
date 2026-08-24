@@ -190,7 +190,7 @@ application has no Inno Setup runtime dependency). The modern deliverable is
 For an Apple Silicon macOS installer, run the independent macOS build script:
 
 ```bash
-./installer/build-installer-macos.sh 1.0.7
+./installer/build-installer-macos.sh 1.0.8
 ```
 
 It requires JDK 17+, Maven, and the macOS command-line tools. The build runs the
@@ -210,11 +210,13 @@ port `9987`, as in the official client when connecting with only an address.
 Put the state file on a shared filesystem when several app instances must see
 the same `voiceSessionStart`. In addition, current ts3j-client instances
 advertise a compact session marker through a private TeamSpeak message when
-one app instance joins another app instance already in the channel. The
-marker is consumed internally and never rendered as chat, so separate
-computers can converge without a shared folder. If the first occupant is the
-official client or an older client that does not advertise this protocol, the
-normal TeamSpeak protocol still cannot reveal the historical start.
+one app instance joins another app instance already in the channel. Restricted
+identities also use a namespaced channel-message request/response fallback, so
+the peers do not need to discover one another's `client_id` or metadata. Both
+control messages are consumed internally and never rendered as chat, allowing
+separate computers to converge without a shared folder. If the first occupant
+is the official client or an older client that does not advertise this protocol,
+the normal TeamSpeak protocol still cannot reveal the historical start.
 
 The connection form remembers the last host, port, nickname, password, and
 state-file path for the current operating-system user. These values are stored in the
