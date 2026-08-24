@@ -137,7 +137,7 @@ final class TeamSpeakAudioBridge implements Microphone, AutoCloseable {
                     MAX_DECODED_SAMPLES, false);
             if (samples > 0) {
                 applyGain(decoded, samples, volumeDb(packet.getClientId()));
-                devices.enqueuePlaybackFrame(shortsToPcm(decoded, samples));
+                enqueueDecodedFrames(packet.getClientId(), decoded, samples);
             }
         } catch (OpusException ignored) {
             // Ignore a malformed/lost frame; the next valid packet restores
@@ -170,6 +170,25 @@ final class TeamSpeakAudioBridge implements Microphone, AutoCloseable {
         for (int i = 0; i < safeCount; i++) {
             int value = (int) Math.round(samples[i] * gain);
             samples[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, value));
+        }
+    }
+
+    /**
+     * Opus may return more than one 20 ms frame (for example after a delayed
+     * packet). Keep the hardware scheduler's cadence fixed by splitting the
+     * decoded data into exactly one TeamSpeak frame per queue item.
+     */
+    private void enqueueDecodedFrames(int clientId, short[] samples, int count) {
+        int safeCount = Math.min(count, samples == null ? 0 : samples.length);
+        for (int offset = 0; offset < safeCount; offset += AudioDeviceService.VOICE_FRAME_SAMPLES) {
+            int frameSamples = Math.min(AudioDeviceService.VOICE_FRAME_SAMPLES, safeCount - offset);
+            byte[] pcm = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
+            for (int i = 0; i < frameSamples; i++) {
+                short value = samples[offset + i];
+                pcm[i * 2] = (byte) (value & 0xff);
+                pcm[i * 2 + 1] = (byte) ((value >>> 8) & 0xff);
+            }
+            devices.enqueuePlaybackFrame(clientId, pcm);
         }
     }
 

@@ -539,14 +539,21 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         if (marker.start.isAfter(clock.instant().plusSeconds(5L))) return true;
 
         int senderId = event.getInvokerId();
-        synchronized (this) {
-            ClientView sender = clients.get(senderId);
-            if (sender != null && sender.getChannelId() != marker.channelId) return true;
+        boolean channelTarget = event.getTargetMode() == TextMessageTargetMode.CHANNEL;
+        // A channel-targeted TeamSpeak message is routed by the server to the
+        // occupants of that channel.  Do not compare it with our cached
+        // client map: after a leave/rejoin that map can briefly contain the
+        // client's previous channel and would discard a valid marker.
+        if (!channelTarget) {
+            synchronized (this) {
+                ClientView sender = clients.get(senderId);
+                if (sender != null && sender.getChannelId() != marker.channelId) return true;
+            }
         }
-        if (event.getTargetMode() == TextMessageTargetMode.CHANNEL
+        if (channelTarget
                 && event.getTargetChannelId() >= 0
                 && event.getTargetChannelId() != marker.channelId) return true;
-        if (event.getTargetMode() == TextMessageTargetMode.CHANNEL && senderId >= 0) {
+        if (channelTarget && senderId >= 0) {
             VoiceRoomSession occupied = sessions.snapshot().get(
                     new SessionKey(marker.serverId, marker.channelId));
             // A channel-targeted marker proves the sender is currently in the
@@ -589,8 +596,14 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         int requesterId = event.getInvokerId();
         if (requesterId < 0 && !broadcast) return true;
         synchronized (this) {
-            ClientView requester = clients.get(requesterId);
-            if (requester != null && requester.getChannelId() != requestedChannelId) return true;
+            // For a channel broadcast, the server's target channel is the
+            // authoritative route.  The local client cache can be one event
+            // behind during a leave/rejoin, so validating the stale entry
+            // would reject the request needed to recover the shared start.
+            if (!broadcast) {
+                ClientView requester = clients.get(requesterId);
+                if (requester != null && requester.getChannelId() != requestedChannelId) return true;
+            }
             if (initialSync || !sessionStateReady) {
                 SessionKey key = new SessionKey(requestedServerId, requestedChannelId);
                 if (broadcast) {
@@ -1237,6 +1250,11 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         respondToPendingSessionMarkerRequests();
         if (!sync && channelId >= 0) {
             queueChannelSessionMarkerRequest(socket, channelId);
+            // If this instance already knows the session start, answer the
+            // fresh join immediately as well as requesting it. This removes a
+            // race where the rejoining client leaves before the request's
+            // response is delivered.
+            respondToChannelSessionMarkerRequest(channelId);
         }
         if (!sync && previousCurrentChannel >= 0 && !localClient
                 && channelId == previousCurrentChannel) {
@@ -1282,6 +1300,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         respondToPendingSessionMarkerRequests();
         if (!sync && target >= 0) {
             queueChannelSessionMarkerRequest(socket, target);
+            respondToChannelSessionMarkerRequest(target);
         }
         if (!sync && !localClient && previousCurrentChannel >= 0) {
             if (target == previousCurrentChannel && from != previousCurrentChannel) {

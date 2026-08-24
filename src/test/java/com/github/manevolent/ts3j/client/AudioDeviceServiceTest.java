@@ -2,6 +2,8 @@ package com.github.manevolent.ts3j.client;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -53,5 +55,29 @@ public class AudioDeviceServiceTest {
         assertEquals(AudioDeviceService.VOICE_FRAME_BYTES, result.length);
         assertEquals(0x34, result[100] & 0xff);
         assertEquals(0x12, result[101] & 0xff);
+    }
+
+    @Test
+    public void playbackMixerCombinesSourcesWithSaturation() {
+        byte[] first = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
+        byte[] second = new byte[AudioDeviceService.VOICE_FRAME_BYTES];
+        for (int i = 0; i < first.length; i += 2) {
+            first[i] = (byte) 0x40;
+            first[i + 1] = 0x1f; // 8000
+            second[i] = (byte) 0x40;
+            second[i + 1] = 0x1f; // 8000
+        }
+        byte[] mixed = AudioDeviceService.mixPcmFrames(Arrays.asList(first, second));
+        assertEquals(AudioDeviceService.VOICE_FRAME_BYTES, mixed.length);
+        assertEquals(16000, (short) ((mixed[0] & 0xff) | (mixed[1] << 8)));
+
+        for (int i = 0; i < first.length; i += 2) {
+            first[i] = (byte) 0xff;
+            first[i + 1] = 0x7f;
+            second[i] = (byte) 0xff;
+            second[i + 1] = 0x7f;
+        }
+        mixed = AudioDeviceService.mixPcmFrames(Arrays.asList(first, second));
+        assertEquals(Short.MAX_VALUE, (short) ((mixed[0] & 0xff) | (mixed[1] << 8)));
     }
 }

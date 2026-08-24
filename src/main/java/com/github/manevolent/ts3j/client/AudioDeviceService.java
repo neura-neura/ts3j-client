@@ -8,15 +8,18 @@ import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -32,6 +35,9 @@ final class AudioDeviceService implements AutoCloseable {
     static final float VOICE_SAMPLE_RATE = 48000.0F;
     static final int VOICE_FRAME_SAMPLES = 960; // 20 ms at 48 kHz
     static final int VOICE_FRAME_BYTES = VOICE_FRAME_SAMPLES * 2;
+    private static final int PLAYBACK_QUEUE_CAPACITY_PER_SOURCE = 8;
+    private static final int PLAYBACK_PREBUFFER_FRAMES = 3;
+    private static final int PLAYBACK_INPUT_CAPACITY = 128;
     /** RMS level at which the tray indicator turns on immediately. */
     static final double VOICE_ON_THRESHOLD = VoiceActivityDetector.ON_THRESHOLD;
 
@@ -47,8 +53,16 @@ final class AudioDeviceService implements AutoCloseable {
     private volatile double captureLevel;
     private volatile double outputLevel;
     private volatile boolean voiceCaptureReady;
+    private volatile long playbackQueueEpoch;
     private final BlockingQueue<byte[]> captureFrames = new ArrayBlockingQueue<>(8);
-    private final BlockingQueue<byte[]> playbackFrames = new ArrayBlockingQueue<>(32);
+    /**
+     * Incoming decoded frames are kept separate from the hardware writer.
+     * The writer drains one frame per source every 20 ms and mixes those
+     * frames. This prevents two speakers from being played sequentially and
+     * gives short network bursts a small, bounded jitter cushion.
+     */
+    private final BlockingQueue<PlaybackFrame> playbackFrames =
+            new ArrayBlockingQueue<>(PLAYBACK_INPUT_CAPACITY);
     private final VoiceActivityDetector voiceActivityDetector = new VoiceActivityDetector();
     private volatile Consumer<Double> captureLevelListener = level -> { };
     private volatile Consumer<Double> outputLevelListener = level -> { };
@@ -83,14 +97,23 @@ final class AudioDeviceService implements AutoCloseable {
 
     void clearPlaybackFrames() {
         playbackFrames.clear();
+        playbackQueueEpoch++;
     }
 
     void enqueuePlaybackFrame(byte[] pcm) {
+        enqueuePlaybackFrame(-1, pcm);
+    }
+
+    void enqueuePlaybackFrame(int sourceId, byte[] pcm) {
         if (pcm == null || pcm.length == 0 || !running) return;
-        byte[] copy = Arrays.copyOf(pcm, pcm.length);
-        if (!playbackFrames.offer(copy)) {
+        byte[] frame = new byte[VOICE_FRAME_BYTES];
+        System.arraycopy(pcm, 0, frame, 0, Math.min(pcm.length, frame.length));
+        PlaybackFrame incoming = new PlaybackFrame(sourceId, frame);
+        if (!playbackFrames.offer(incoming)) {
+            // Preserve the newest audio. Keeping old packets would increase
+            // latency until the user hears stale speech.
             playbackFrames.poll();
-            playbackFrames.offer(copy);
+            playbackFrames.offer(incoming);
         }
     }
 
@@ -257,21 +280,38 @@ final class AudioDeviceService implements AutoCloseable {
                 continue;
             }
             playbackLine = line;
+            Map<Integer, Deque<byte[]>> pendingBySource = new HashMap<>();
+            boolean primed = false;
+            long queueEpoch = playbackQueueEpoch;
+            byte[] silence = new byte[VOICE_FRAME_BYTES];
             try {
                 while (running && playbackLine == line && !Thread.currentThread().isInterrupted()) {
-                    byte[] pcm = playbackFrames.poll(200L, TimeUnit.MILLISECONDS);
-                    if (pcm == null) {
+                    if (queueEpoch != playbackQueueEpoch) {
+                        pendingBySource.clear();
+                        primed = false;
+                        queueEpoch = playbackQueueEpoch;
+                    }
+                    drainPlaybackFrames(pendingBySource);
+                    if (!primed && pendingFrameCount(pendingBySource) < PLAYBACK_PREBUFFER_FRAMES) {
+                        // Wait for a few frames before starting the stream so
+                        // normal network jitter does not become an audible
+                        // underrun. Once primed, silence is written for gaps
+                        // to keep the device clock continuous.
                         publishOutput(0.0D);
+                        try { Thread.sleep(2L); } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                         continue;
                     }
+                    primed = true;
+                    byte[] pcm = mixNextPlaybackFrame(pendingBySource);
+                    if (pcm == null) pcm = silence;
                     byte[] output = resamplePcm(pcm, VOICE_SAMPLE_RATE,
                             line.getFormat().getSampleRate());
                     line.write(output, 0, output.length);
                     publishOutput(computeRms(output, output.length));
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                break;
             } catch (RuntimeException ignored) {
                 // Retry after a device disappears or is reconfigured.
             } finally {
@@ -310,7 +350,9 @@ final class AudioDeviceService implements AutoCloseable {
                     DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
                     if (!mixer.isLineSupported(info)) continue;
                     SourceDataLine line = (SourceDataLine) mixer.getLine(info);
-                    line.open(format);
+                    int bufferBytes = Math.max(VOICE_FRAME_BYTES * 4,
+                            Math.round(format.getSampleRate() * 0.08F) * format.getFrameSize());
+                    line.open(format, bufferBytes);
                     line.start();
                     return line;
                 } catch (Exception ignored) {
@@ -435,6 +477,67 @@ final class AudioDeviceService implements AutoCloseable {
         return Math.min(1.0D, Math.sqrt(sum / samples) * 2.2D);
     }
 
+    private void drainPlaybackFrames(Map<Integer, Deque<byte[]>> pendingBySource) {
+        PlaybackFrame incoming;
+        while ((incoming = playbackFrames.poll()) != null) {
+            Deque<byte[]> sourceFrames = pendingBySource.get(incoming.sourceId);
+            if (sourceFrames == null) {
+                sourceFrames = new ArrayDeque<>();
+                pendingBySource.put(incoming.sourceId, sourceFrames);
+            }
+            if (sourceFrames.size() >= PLAYBACK_QUEUE_CAPACITY_PER_SOURCE) {
+                sourceFrames.pollFirst();
+            }
+            sourceFrames.offerLast(incoming.pcm);
+        }
+    }
+
+    private static int pendingFrameCount(Map<Integer, Deque<byte[]>> pendingBySource) {
+        int count = 0;
+        for (Deque<byte[]> frames : pendingBySource.values()) {
+            if (frames != null) count += frames.size();
+        }
+        return count;
+    }
+
+    private static byte[] mixNextPlaybackFrame(Map<Integer, Deque<byte[]>> pendingBySource) {
+        List<byte[]> frames = new ArrayList<>();
+        List<Integer> emptySources = new ArrayList<>();
+        for (Map.Entry<Integer, Deque<byte[]>> entry : pendingBySource.entrySet()) {
+            Deque<byte[]> sourceFrames = entry.getValue();
+            byte[] frame = sourceFrames == null ? null : sourceFrames.pollFirst();
+            if (frame != null) frames.add(frame);
+            if (sourceFrames == null || sourceFrames.isEmpty()) emptySources.add(entry.getKey());
+        }
+        for (Integer sourceId : emptySources) pendingBySource.remove(sourceId);
+        return frames.isEmpty() ? null : mixPcmFrames(frames);
+    }
+
+    /** Headroom-preserving little-endian PCM mixer used by the playback loop. */
+    static byte[] mixPcmFrames(List<byte[]> frames) {
+        byte[] mixed = new byte[VOICE_FRAME_BYTES];
+        if (frames == null || frames.isEmpty()) return mixed;
+        int[] sums = new int[VOICE_FRAME_SAMPLES];
+        int peak = 0;
+        for (int sample = 0; sample < VOICE_FRAME_SAMPLES; sample++) {
+            int sum = 0;
+            for (byte[] frame : frames) {
+                if (frame == null || frame.length < sample * 2 + 2) continue;
+                sum += readSample(frame, sample);
+            }
+            sums[sample] = sum;
+            peak = Math.max(peak, Math.abs(sum));
+        }
+        double scale = peak > Short.MAX_VALUE ? (double) Short.MAX_VALUE / peak : 1.0D;
+        for (int sample = 0; sample < VOICE_FRAME_SAMPLES; sample++) {
+            int value = (int) Math.round(sums[sample] * scale);
+            value = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, value));
+            mixed[sample * 2] = (byte) (value & 0xff);
+            mixed[sample * 2 + 1] = (byte) ((value >>> 8) & 0xff);
+        }
+        return mixed;
+    }
+
     private static String deviceKey(Mixer.Info info) {
         return info.getName() + "\u001f" + info.getVendor() + "\u001f"
                 + info.getDescription() + "\u001f" + info.getVersion();
@@ -453,6 +556,16 @@ final class AudioDeviceService implements AutoCloseable {
     private void publishOutput(double value) {
         outputLevel = Math.max(0.0D, Math.min(1.0D, value));
         try { outputLevelListener.accept(outputLevel); } catch (RuntimeException ignored) { }
+    }
+
+    private static final class PlaybackFrame {
+        private final int sourceId;
+        private final byte[] pcm;
+
+        private PlaybackFrame(int sourceId, byte[] pcm) {
+            this.sourceId = sourceId;
+            this.pcm = pcm;
+        }
     }
 
     private void closeCaptureLine() {

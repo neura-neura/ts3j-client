@@ -365,6 +365,57 @@ public class TeamSpeakGatewaySessionSyncTest {
         }
     }
 
+    @Test
+    public void channelMarkerAndRequestIgnoreStaleCachedChannelAfterRejoin() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(coordinator, clock);
+        RecordingSocket socket = new RecordingSocket();
+        socket.setClientId(8);
+        try {
+            configure(gateway, socket);
+            Map<Integer, java.util.Collection<Integer>> occupied = new HashMap<>();
+            occupied.put(1, Arrays.<Integer>asList(7, 8));
+            coordinator.reconcile(SERVER, occupied, NOW, "occupied", 0, 8);
+            coordinator.adoptSessionStart(SERVER, 1, START, "peer-start");
+
+            // This is the state observed in the failing leave/rejoin race:
+            // the server has routed the event to channel 1, but our cached
+            // client entry still points at the channel the user left.
+            java.lang.reflect.Field clients = TeamSpeakGateway.class
+                    .getDeclaredField("clients");
+            clients.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<Integer, ClientView> cached = (Map<Integer, ClientView>) clients.get(gateway);
+            cached.put(7, new ClientView(7, 99, "peer", 0, false, false));
+
+            String encodedServer = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    SERVER.getBytes(StandardCharsets.UTF_8));
+            Map<String, String> request = new HashMap<>();
+            request.put("targetmode", "2");
+            request.put("target", "1");
+            request.put("invokerid", "7");
+            request.put("msg", "ts3j-session-channel-request-v1|" + encodedServer + "|1");
+            gateway.onTextMessage(new TextMessageEvent(request));
+            assertTrue(awaitMessage(socket, "ts3j-session-v1|").contains("|1|" + START));
+
+            Map<String, String> marker = new HashMap<>();
+            marker.put("targetmode", "2");
+            marker.put("target", "1");
+            marker.put("invokerid", "7");
+            marker.put("msg", "ts3j-session-v1|" + encodedServer + "|1|" + START);
+            gateway.onTextMessage(new TextMessageEvent(marker));
+
+            VoiceRoomSession session = coordinator.snapshot()
+                    .get(new SessionKey(SERVER, 1));
+            assertTrue(session.isStartKnown());
+            assertEquals(START, session.getVoiceSessionStart());
+        } finally {
+            gateway.close();
+        }
+    }
+
     private static void configure(TeamSpeakGateway gateway, RecordingSocket socket)
             throws Exception {
         java.lang.reflect.Field config = TeamSpeakGateway.class.getDeclaredField("config");
