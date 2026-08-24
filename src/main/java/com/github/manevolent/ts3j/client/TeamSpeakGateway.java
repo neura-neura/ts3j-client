@@ -1030,6 +1030,48 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         return serverId + "\u0000" + channelId + "\u0000" + peerId;
     }
 
+    private void clearSessionMarkerNegotiationAfterLeave(String serverId, int channelId,
+                                                          int clientId) {
+        if (serverId == null || serverId.isEmpty() || channelId < 0) return;
+        SessionKey key = new SessionKey(serverId, channelId);
+        synchronized (this) {
+            if (clientId >= 0) {
+                recentSessionMarkerPeerRequests.remove(
+                        sessionMarkerPeerKey(serverId, channelId, clientId));
+            }
+            VoiceRoomSession session = sessions.snapshot().get(key);
+            if (session != null && session.isOccupied()) return;
+            pendingSessionMarkers.remove(key);
+            pendingSessionMarkerRequests.remove(key);
+            pendingSessionChannelRequests.remove(key);
+            String prefix = serverId + "\u0000" + channelId + "\u0000";
+            recentSessionMarkerPeerRequests.keySet().removeIf(value -> value.startsWith(prefix));
+        }
+    }
+
+    private void discardPendingSessionMarkersForEmptyChannels(String serverId,
+                                                               Map<Integer, ? extends java.util.Collection<Integer>> snapshot) {
+        if (serverId == null || serverId.isEmpty()) return;
+        synchronized (this) {
+            Set<SessionKey> keys = new HashSet<>();
+            for (SessionKey key : pendingSessionMarkers.keySet()) {
+                if (key.getServerId().equals(serverId)) keys.add(key);
+            }
+            for (SessionKey key : keys) {
+                java.util.Collection<Integer> users = snapshot == null ? null
+                        : snapshot.get(key.getChannelId());
+                if (users == null || users.isEmpty()) {
+                    pendingSessionMarkers.remove(key);
+                    pendingSessionMarkerRequests.remove(key);
+                    pendingSessionChannelRequests.remove(key);
+                    String prefix = serverId + "\u0000" + key.getChannelId() + "\u0000";
+                    recentSessionMarkerPeerRequests.keySet()
+                            .removeIf(value -> value.startsWith(prefix));
+                }
+            }
+        }
+    }
+
     private String sessionMarker(int channelId) {
         SessionKey key = new SessionKey(configuredServerId(), channelId);
         VoiceRoomSession session = sessions.snapshot().get(key);
@@ -1226,6 +1268,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         sessions.reconcile(config.serverId(), snapshot, clock.instant(),
                 gatewayEventId("snapshot", Collections.<String, String>emptyMap()), 0L,
                 current.getClientId());
+        discardPendingSessionMarkersForEmptyChannels(config.serverId(), snapshot);
         // A marker may have arrived while the snapshot was being assembled.
         // Apply once before and once after publishing readiness so a marker
         // queued during the transition cannot be stranded.
@@ -1433,6 +1476,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         if (config != null) {
             sessions.leave(config.serverId(), from, clientId, clock.instant(),
                     gatewayEventId("leave", event.getMap()), 0L);
+            clearSessionMarkerNegotiationAfterLeave(config.serverId(), from, clientId);
         }
         if (!sync && !localClient && from >= 0 && from == previousCurrentChannel) {
             emitActivity(new TeamSpeakActivity(TeamSpeakActivity.Type.CLIENT_LEFT_CURRENT_CHANNEL,
@@ -1502,6 +1546,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         if (config != null && localId >= 0 && channelId >= 0) {
             sessions.leave(config.serverId(), channelId, localId, clock.instant(),
                     gatewayEventId("disconnect", Collections.<String, String>emptyMap()), 0L);
+            clearSessionMarkerNegotiationAfterLeave(config.serverId(), channelId, localId);
         }
         synchronized (this) {
             status = ConnectionStatus.DISCONNECTED;

@@ -263,6 +263,60 @@ public class TeamSpeakGatewaySessionSyncTest {
     }
 
     @Test
+    public void pendingMarkerIsDiscardedWhenSnapshotConfirmsAnEmptyChannel() throws Exception {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
+                new InMemoryVoiceSessionRepository(), clock);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(coordinator, clock);
+        try {
+            java.lang.reflect.Field config = TeamSpeakGateway.class.getDeclaredField("config");
+            config.setAccessible(true);
+            config.set(gateway, new ConnectionConfig("voice.example", 9987, "", "tester", null));
+            java.lang.reflect.Field initialSync = TeamSpeakGateway.class
+                    .getDeclaredField("initialSync");
+            initialSync.setAccessible(true);
+            initialSync.setBoolean(gateway, true);
+            java.lang.reflect.Field stateReady = TeamSpeakGateway.class
+                    .getDeclaredField("sessionStateReady");
+            stateReady.setAccessible(true);
+            stateReady.setBoolean(gateway, false);
+
+            String encodedServer = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    SERVER.getBytes(StandardCharsets.UTF_8));
+            Map<String, String> marker = new HashMap<>();
+            marker.put("targetmode", "1");
+            marker.put("invokerid", "7");
+            marker.put("msg", "ts3j-session-v1|" + encodedServer + "|1|" + START);
+            gateway.onTextMessage(new TextMessageEvent(marker));
+
+            coordinator.reconcile(SERVER, new HashMap<Integer, java.util.Collection<Integer>>(),
+                    NOW, "empty-confirmation", 0, 8);
+            java.lang.reflect.Method discard = TeamSpeakGateway.class.getDeclaredMethod(
+                    "discardPendingSessionMarkersForEmptyChannels", String.class, Map.class);
+            discard.setAccessible(true);
+            discard.invoke(gateway, SERVER, new HashMap<Integer, java.util.Collection<Integer>>());
+
+            Map<Integer, java.util.Collection<Integer>> fresh = new HashMap<>();
+            fresh.put(1, java.util.Collections.<Integer>singleton(8));
+            coordinator.reconcile(SERVER, fresh, NOW, "fresh-local", 0, 8);
+            stateReady.setBoolean(gateway, true);
+            initialSync.setBoolean(gateway, false);
+            java.lang.reflect.Method applyPending = TeamSpeakGateway.class
+                    .getDeclaredMethod("applyPendingSessionMarkers");
+            applyPending.setAccessible(true);
+            applyPending.invoke(gateway);
+
+            VoiceRoomSession session = coordinator.snapshot()
+                    .get(new SessionKey(SERVER, 1));
+            assertTrue(session.isStartKnown());
+            assertEquals(NOW, session.getVoiceSessionStart());
+            assertEquals(java.util.Collections.singleton(8), session.getPresentUsers());
+        } finally {
+            gateway.close();
+        }
+    }
+
+    @Test
     public void channelMarkerReceivedBeforeReconnectSnapshotKeepsTheSharedStart() throws Exception {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         VoiceSessionCoordinator coordinator = new VoiceSessionCoordinator(
