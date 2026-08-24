@@ -18,6 +18,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class TeamSpeakActivityTest {
@@ -70,6 +71,27 @@ public class TeamSpeakActivityTest {
             gateway.onClientLeave(new ClientLeaveEvent(query));
             gateway.onClientJoin(new ClientJoinEvent(clientMap(7, 42, "aruen")));
             assertTrue(gateway.snapshot().getClients().containsKey(7));
+        } finally {
+            gateway.close();
+        }
+    }
+
+    @Test
+    public void authoritativeConnectionDoesNotShowAProvisionalLocalTimer() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-21T12:00:00Z"), ZoneOffset.UTC);
+        TeamSpeakGateway gateway = new TeamSpeakGateway(
+                new VoiceSessionCoordinator(new InMemoryVoiceSessionRepository(), clock), clock,
+                new InMemoryChannelChatRepository());
+        setField(gateway, "config", new ConnectionConfig("server", 9987, "", "neura", null));
+        setField(gateway, "serverAuthorityEnabled", true);
+        try {
+            gateway.onClientJoin(new ClientJoinEvent(clientMap(7, 42, "neura")));
+
+            VoiceRoomSession session = gateway.snapshot().getSessions()
+                    .get(new SessionKey("server:9987", 42));
+            assertNotNull(session);
+            assertFalse(session.isStartKnown());
+            assertTrue(session.containsUser(7));
         } finally {
             gateway.close();
         }

@@ -113,6 +113,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
     private volatile TeamSpeakAudioBridge audioBridge;
     private volatile ClientVolumeStore clientVolumeStore;
     private volatile ConnectionConfig config;
+    private volatile boolean serverAuthorityEnabled;
     private volatile ConnectionStatus status = ConnectionStatus.DISCONNECTED;
     private volatile String errorMessage = "";
     private volatile String chatHistoryWarning = "";
@@ -185,6 +186,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         }
         if (connectionConfig == null) throw new IllegalArgumentException("connectionConfig");
         config = connectionConfig;
+        serverAuthorityEnabled = true;
         // Session starts are no longer persisted by each desktop instance.
         // The server-side ts3j-session-timer is authoritative; this in-memory
         // repository only carries the occupied-channel view used by JavaFX.
@@ -246,6 +248,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                 } catch (Throwable error) {
                     synchronized (TeamSpeakGateway.this) {
                         status = ConnectionStatus.ERROR;
+                        serverAuthorityEnabled = false;
                         errorMessage = friendlyMessage(error);
                         sessionStateReady = false;
                         if (audioBridge == nextAudioBridge) {
@@ -278,6 +281,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                         if (socket == current) {
                             socket = null;
                             status = ConnectionStatus.DISCONNECTED;
+                            serverAuthorityEnabled = false;
                             currentChannelId = -1;
                             clients.clear();
                             channels.clear();
@@ -516,8 +520,14 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         if (event.getTargetMode() == TextMessageTargetMode.CLIENT
                 || event.getTargetMode() == TextMessageTargetMode.CHANNEL) {
             if (consumeServerSessionMarker(event)) return;
-            if (consumeSessionMarker(event)) return;
-            if (consumeSessionMarkerRequest(event)) return;
+            if (!isServerAuthorityEnabled()) {
+                if (consumeSessionMarker(event)) return;
+                if (consumeSessionMarkerRequest(event)) return;
+            } else if (isLegacySessionControlMessage(event.getMessage())) {
+                // Once connected to the authoritative service, old peer
+                // markers must not create a provisional local timer.
+                return;
+            }
         }
         if (event.getTargetMode() != TextMessageTargetMode.CHANNEL) return;
         int channelId = event.getTargetChannelId();
@@ -1285,6 +1295,17 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         return config == null ? "" : config.serverId();
     }
 
+    /** The desktop uses the server-side timer whenever a connection is active. */
+    private synchronized boolean isServerAuthorityEnabled() {
+        return serverAuthorityEnabled;
+    }
+
+    private static boolean isLegacySessionControlMessage(String message) {
+        return message != null && (message.startsWith(SESSION_MARKER_PREFIX)
+                || message.startsWith(SESSION_MARKER_REQUEST_PREFIX)
+                || message.startsWith(SESSION_CHANNEL_REQUEST_PREFIX));
+    }
+
     private void refreshFromServer(LocalTeamspeakClientSocket current) throws Exception {
         Map<Integer, ChannelView> loadedChannels = new HashMap<>();
         boolean channelListLoaded = false;
@@ -1383,22 +1404,25 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         }
         Map<Integer, java.util.Collection<Integer>> snapshot = new LinkedHashMap<>();
         snapshot.putAll(usersByChannel);
+        boolean authoritative = isServerAuthorityEnabled();
         sessions.reconcile(config.serverId(), snapshot, clock.instant(),
                 gatewayEventId("snapshot", Collections.<String, String>emptyMap()), 0L,
-                current.getClientId());
+                authoritative ? -1 : current.getClientId());
         discardPendingSessionMarkersForEmptyChannels(config.serverId(), snapshot);
         // A marker may have arrived while the snapshot was being assembled.
         // Apply once before and once after publishing readiness so a marker
         // queued during the transition cannot be stranded.
-        applyPendingSessionMarkers();
+        if (!authoritative) applyPendingSessionMarkers();
         applyPendingServerSessionMarkers();
         initialSync = false;
         sessionStateReady = true;
-        applyPendingSessionMarkers();
+        if (!authoritative) applyPendingSessionMarkers();
         applyPendingServerSessionMarkers();
-        respondToPendingSessionMarkerRequests();
-        requestPeerSessionMarkers(current, effectiveClients);
-        if (currentChannelId >= 0) {
+        if (!authoritative) {
+            respondToPendingSessionMarkerRequests();
+            requestPeerSessionMarkers(current, effectiveClients);
+        }
+        if (!authoritative && currentChannelId >= 0) {
             queueChannelSessionMarkerRequest(current, currentChannelId);
             scheduleChannelSessionMarkerRetries(current, currentChannelId);
             respondToChannelSessionMarkerRequest(currentChannelId);
@@ -1500,17 +1524,18 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             clients.put(view.getId(), view);
             if (localClient) currentChannelId = channelId;
         }
+        boolean authoritative = isServerAuthorityEnabled();
         if (channelId >= 0 && config != null) {
             sessions.join(config.serverId(), channelId, view.getId(), clock.instant(),
-                    sync, gatewayEventId("join", event.getMap()), 0L);
+                    sync || authoritative, gatewayEventId("join", event.getMap()), 0L);
         }
-        if (!localClient && channelId >= 0 && !sync) {
+        if (!authoritative && !localClient && channelId >= 0 && !sync) {
             queuePeerSessionMarker(socket, view.getId(), channelId);
         }
-        applyPendingSessionMarkers();
+        if (!authoritative) applyPendingSessionMarkers();
         applyPendingServerSessionMarkers();
-        respondToPendingSessionMarkerRequests();
-        if (!sync && channelId >= 0) {
+        if (!authoritative) respondToPendingSessionMarkerRequests();
+        if (!authoritative && !sync && channelId >= 0) {
             queueChannelSessionMarkerRequest(socket, channelId);
             if (localClient) scheduleChannelSessionMarkerRetries(socket, channelId);
             // If this instance already knows the session start, answer the
@@ -1562,17 +1587,18 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
                     old != null && old.isAway()));
             if (localClient) currentChannelId = target;
         }
+        boolean authoritative = isServerAuthorityEnabled();
         if (config != null && target >= 0) {
             sessions.move(config.serverId(), from, target, clientId, clock.instant(),
-                    sync, gatewayEventId("move", event.getMap()), 0L);
+                    sync || authoritative, gatewayEventId("move", event.getMap()), 0L);
         }
-        if (!localClient && target >= 0 && !sync) {
+        if (!authoritative && !localClient && target >= 0 && !sync) {
             queuePeerSessionMarker(socket, clientId, target);
         }
-        applyPendingSessionMarkers();
+        if (!authoritative) applyPendingSessionMarkers();
         applyPendingServerSessionMarkers();
-        respondToPendingSessionMarkerRequests();
-        if (!sync && target >= 0) {
+        if (!authoritative) respondToPendingSessionMarkerRequests();
+        if (!authoritative && !sync && target >= 0) {
             queueChannelSessionMarkerRequest(socket, target);
             if (localClient) scheduleChannelSessionMarkerRetries(socket, target);
             respondToChannelSessionMarkerRequest(target);
@@ -1598,6 +1624,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         int clientId = event.getClientId();
         int from = event.getClientFromId();
         boolean sync = initialSync;
+        boolean authoritative = isServerAuthorityEnabled();
         int previousCurrentChannel;
         boolean localClient;
         String nickname;
@@ -1626,7 +1653,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
             emitActivity(new TeamSpeakActivity(TeamSpeakActivity.Type.CLIENT_LEFT_CURRENT_CHANNEL,
                     nickname, channelName(from), "", serverName()));
         }
-        if (!sync && from >= 0) {
+        if (!authoritative && !sync && from >= 0) {
             queueChannelSessionMarkerRequest(socket, from);
         }
         refreshStatus();
@@ -1695,6 +1722,7 @@ public final class TeamSpeakGateway implements TS3Listener, AutoCloseable {
         }
         synchronized (this) {
             status = ConnectionStatus.DISCONNECTED;
+            serverAuthorityEnabled = false;
             currentChannelId = -1;
             clients.clear();
             nonUserClientIds.clear();
