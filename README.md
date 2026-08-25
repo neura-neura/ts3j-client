@@ -208,12 +208,59 @@ The preview is explicit demo data. A real connection starts from the
 Leave the port empty to use TeamSpeak 3's standard port `9987`, as in the
 official client when connecting with only an address.
 
-The desktop no longer creates or persists a timer. The companion
-`ts3j-session-timer` service runs beside the TeamSpeak server, owns the
-zero-to-one/one-to-zero transitions, persists `voiceSessionStart`, and sends
-an authoritative marker to every connected client. The desktop keeps only the
+## Optional authoritative timer service
+
+The desktop no longer creates or persists a timer locally. For a timer that is
+shared correctly by every instance, install the companion
+[`ts3j-session-timer`](https://github.com/neura-neura/ts3j-session-timer)
+service once beside the TeamSpeak virtual server. It owns the zero-to-one and
+one-to-zero transitions, persists `voiceSessionStart`, and sends an
+authoritative UTC marker to every connected client. The desktop keeps only the
 in-memory channel occupancy needed to render that server-provided start; the
 old shared state-file field is retained only as a source-compatibility detail.
+
+The service is optional for the rest of the client: channel browsing, text
+chat, and voice can work without it. It is not optional for an exact,
+cross-computer timer. Without the service, TeamSpeak's normal client protocol
+does not expose when an already occupied server session began, so this client
+shows a neutral active state instead of displaying an invented duration.
+
+### Quick setup
+
+1. On the TeamSpeak host (or a protected host that can reach ServerQuery),
+   clone the timer repository and build it with JDK 17+ and Maven:
+
+   ```text
+   mvn clean verify
+   ```
+
+2. Copy `ts3j-session-timer.example.properties` to a protected configuration
+   file. Set the dedicated ServerQuery username/password, virtual-server ID,
+   persistent `timer.state-file`, and `client.server-id` in the form
+   `host:voice-port` (for example, `192.168.196.65:9987`). Keep the ServerQuery
+   port (`10011/TCP` in a common setup) separate from the voice port
+   (`9987/UDP`). Never commit the real password.
+
+3. Grant the dedicated ServerQuery account permission to select the virtual
+   server, list real clients, receive client/server notifications, and send
+   channel messages. Run the JAR as a long-running service (systemd is shown
+   in the timer repository README), and keep its state directory on persistent
+   storage.
+
+4. Install the same compatible `ts3j-client` release on each computer and
+   connect all instances to the same TeamSpeak address and voice port. No
+   timer service or database is needed on the desktop machines.
+
+When the service sees the first real client it starts a new UTC session. It
+keeps that start while any real client remains, sends the same marker to active
+voice channels, and clears it after the last real client leaves. A later first
+client therefore starts at `00:00:00`. ServerQuery helper clients are ignored,
+and periodic reconciliation handles duplicate, late, or missed events.
+
+If the service is first started while users are already connected, the exact
+historical start cannot be recovered from TeamSpeak; the first occupied state
+observed by the service becomes the baseline. This limitation is documented in
+the [timer service README](https://github.com/neura-neura/ts3j-session-timer#operational-notes-and-limitations).
 
 The connection form remembers the last host, port, nickname, and password for
 the current operating-system user. These values are stored in the local Java
